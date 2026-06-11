@@ -114,16 +114,32 @@ class KlipperClient(private val config: KlipperConfig) {
     }
 
     // Druckerstatus abfragen
+    // Liefert den echten Druckzustand aus print_stats.state (printing/paused/...),
+    // NICHT den Klipper-Host-Status aus /printer/info (der nur ready/startup/shutdown kennt).
     suspend fun getPrinterStatus(): PrinterStatusInfo = withContext(Dispatchers.IO) {
         try {
-            val req = Request.Builder().url("$baseUrl/printer/info").get().build()
+            val req = Request.Builder()
+                .url("$baseUrl/printer/objects/query?print_stats=state,message")
+                .get().build()
             val resp = client.newCall(req).execute()
             val body = resp.body?.string() ?: return@withContext PrinterStatusInfo()
-            val json = JSONObject(body)
-            val result = json.optJSONObject("result") ?: return@withContext PrinterStatusInfo()
+            val status = JSONObject(body)
+                .optJSONObject("result")?.optJSONObject("status")
+                ?: return@withContext PrinterStatusInfo()
+            val ps = status.optJSONObject("print_stats") ?: return@withContext PrinterStatusInfo()
+            val rawState = ps.optString("state", "")
+            // print_stats.state: standby | printing | paused | complete | cancelled | error
+            // standby/complete/cancelled werden als Leerlauf ("ready") behandelt.
+            val mapped = when (rawState) {
+                "printing" -> "printing"
+                "paused"   -> "paused"
+                "error"    -> "error"
+                "standby", "complete", "cancelled", "" -> "ready"
+                else -> "ready"
+            }
             PrinterStatusInfo(
-                state = result.optString("state", "offline"),
-                message = result.optString("state_message", "")
+                state = mapped,
+                message = ps.optString("message", "")
             )
         } catch (e: Exception) {
             PrinterStatusInfo("offline")
