@@ -1822,26 +1822,33 @@ fun WebcamSettingsDialog(
                     modifier = Modifier.fillMaxWidth(),
                     colors = textFieldColors
                 )
-                // Vorschau der resultierenden URL
-                val previewUrl = run {
-                    val host = uiState.config.host
-                    val port = webcamPort.toIntOrNull()?.takeIf { it > 0 } ?: uiState.config.port
-                    val path = streamUrl.trim()
-                    val key = uiState.config.apiKey
-                    if (host.isBlank() || path.isBlank()) return@run ""
-                    val keyPart = if (key.isNotBlank()) "?apikey=$key" else ""
-                    if (path.startsWith("/")) "http://$host:$port$path$keyPart"
-                    else if (key.isNotBlank()) "$path?apikey=$key" else path
+                // Vorschau der resultierenden URLs (Stream + Snapshot)
+                val resolvedPort = webcamPort.toIntOrNull()?.takeIf { it > 0 } ?: uiState.config.port
+                val resolvedHost = uiState.config.host
+                val resolvedKey = uiState.config.apiKey
+                fun buildPreviewUrl(path: String): String {
+                    if (resolvedHost.isBlank() || path.isBlank()) return ""
+                    val keyPart = if (resolvedKey.isNotBlank()) "?apikey=$resolvedKey" else ""
+                    return if (path.startsWith("/")) "http://$resolvedHost:$resolvedPort$path$keyPart"
+                    else if (resolvedKey.isNotBlank()) "$path?apikey=$resolvedKey" else path
                 }
-                if (previewUrl.isNotBlank()) {
+                val previewUrl = buildPreviewUrl(streamUrl.trim())
+                val previewSnapshotUrl = buildPreviewUrl(snapshotUrl.trim())
+                if (previewUrl.isNotBlank() || previewSnapshotUrl.isNotBlank()) {
                     Surface(
                         color = Color(0xFF0D1B2A),
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(Modifier.padding(10.dp)) {
-                            Text("Aktuell genutzte URL:", color = Color(0xFF888888), fontSize = 11.sp)
-                            Text(previewUrl, color = Color(0xFF4FC3F7), fontSize = 11.sp)
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (previewUrl.isNotBlank()) {
+                                Text("Stream URL:", color = Color(0xFF888888), fontSize = 11.sp)
+                                Text(previewUrl, color = Color(0xFF4FC3F7), fontSize = 11.sp)
+                            }
+                            if (previewSnapshotUrl.isNotBlank()) {
+                                Text("Snapshot URL:", color = Color(0xFF888888), fontSize = 11.sp)
+                                Text(previewSnapshotUrl, color = Color(0xFF4FC3F7), fontSize = 11.sp)
+                            }
                         }
                     }
                 }

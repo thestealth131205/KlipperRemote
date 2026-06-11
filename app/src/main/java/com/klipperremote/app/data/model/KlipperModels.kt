@@ -68,9 +68,9 @@ data class WebcamConfig(
     fun resolveSnapshotUrl(host: String, moonrakerPort: Int = 7125, apiKey: String = ""): String {
         val snap = snapshotUrl.ifBlank { return "" }
         val ePort = effectivePort(moonrakerPort)
+        val keyParam = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
         return if (snap.startsWith("/")) {
-            val keyp = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
-            "http://$host:$ePort$snap$keyp"
+            "http://$host:$ePort$snap$keyParam"
         } else {
             if (apiKey.isNotBlank()) "$snap?apikey=$apiKey" else snap
         }
