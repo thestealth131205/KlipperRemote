@@ -10,4 +10,5 @@ val SurfaceVariant = Color(0xFF252525)
 val OnSurface = Color(0xFFE0E0E0)
 val OnSurfaceDim = Color(0xFF9E9E9E)
 val ErrorRed = Color(0xFFCF6679)
-val AccentBlue = Color(0xFF1E88E5)
+val AccentYellow = Color(0xFFFFEB00)
+val AccentBlue = AccentYellow

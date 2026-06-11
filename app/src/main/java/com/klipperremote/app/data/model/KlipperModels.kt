@@ -50,7 +50,12 @@ enum class WebcamStreamType(val label: String) {
 data class WebcamConfig(
     val name: String = "cam 1",
     val customUrl: String = "",
+    val snapshotUrl: String = "",
     val streamType: WebcamStreamType = WebcamStreamType.MJPEG,
+    val fps: Int = 15,
+    val rotate: Int = 0,
+    val flipH: Boolean = false,
+    val flipV: Boolean = false,
     val stunServer: String = "stun:stun.l.google.com:19302",
     val iceUsername: String = "",
     val icePassword: String = ""
@@ -78,4 +83,9 @@ data class KlipperPosition(
     val x: Float? = null,
     val y: Float? = null,
     val z: Float? = null
+)
+
+data class PowerDevice(
+    val name: String,
+    val status: String // "on", "off", "error"
 )

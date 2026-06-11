@@ -6,9 +6,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -16,9 +19,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -27,7 +29,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.klipperremote.app.data.model.KlipperPosition
+import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.WebcamConfig
+import com.klipperremote.app.data.model.WebcamStreamType
 import com.klipperremote.app.ui.theme.*
 import com.klipperremote.app.viewmodel.MainViewModel
 
@@ -38,6 +44,11 @@ fun HomeScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var setTempTarget by remember { mutableStateOf<TemperatureInfo?>(null) }
+    var showWebcamSettings by remember { mutableStateOf(false) }
+    var showPowerDialog by remember { mutableStateOf(false) }
+
+    val powerDevices = uiState.powerDevices
+    val isPowerOn = powerDevices.isNotEmpty() && powerDevices.all { it.status == "on" }
 
     Scaffold(
         containerColor = BackgroundDark,
@@ -74,9 +85,9 @@ fun HomeScreen(
                         )
                         Button(
                             onClick = onNavigateToSettings,
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentYellow)
                         ) {
-                            Text("Einstellungen öffnen")
+                            Text("Einstellungen öffnen", color = Color.Black)
                         }
                     }
                 }
@@ -131,9 +142,30 @@ fun HomeScreen(
                         }
                     }
 
-                    // Temperature section header
+                    // Temperaturen header with optional power button
                     item {
-                        SectionHeader(title = "Temperaturen", onGearClick = onNavigateToSettings)
+                        SectionHeader(title = "Temperaturen") {
+                            if (powerDevices.isNotEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (isPowerOn) AccentYellow.copy(alpha = 0.15f)
+                                            else Color.Transparent
+                                        )
+                                        .clickable { showPowerDialog = true },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.PowerSettingsNew,
+                                        contentDescription = "Drucker-Power",
+                                        tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     // Temperature grid
@@ -146,7 +178,7 @@ fun HomeScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 CircularProgressIndicator(
-                                    color = AccentBlue,
+                                    color = AccentYellow,
                                     modifier = Modifier.size(36.dp)
                                 )
                             }
@@ -160,16 +192,48 @@ fun HomeScreen(
 
                     // Webcam section header
                     item {
-                        SectionHeader(
-                            title = "Webcam",
-                            onGearClick = { /* webcam settings */ }
-                        )
+                        SectionHeader(title = "Webcam") {
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { showWebcamSettings = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Settings,
+                                    contentDescription = null,
+                                    tint = AccentYellow,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
 
                     // Webcam card
                     item {
-                        WebcamCard(host = uiState.config.host)
+                        WebcamCard(
+                            host = uiState.config.host,
+                            webcamConfig = uiState.webcamConfig
+                        )
                     }
+
+                    // Bewegungsbereich header
+                    item {
+                        SectionHeader(title = "Bewegen")
+                    }
+
+                    // Bewegungsbereich
+                    item {
+                        BewegungsSection(
+                            position = uiState.position,
+                            onJog = { axis, dist -> viewModel.jogMove(axis, dist) },
+                            onHome = { axes -> viewModel.homeAxes(axes) }
+                        )
+                    }
+
+                    // Bottom spacing
+                    item { Spacer(Modifier.height(8.dp)) }
                 }
             }
         }
@@ -184,6 +248,27 @@ fun HomeScreen(
                 setTempTarget = null
             },
             onDismiss = { setTempTarget = null }
+        )
+    }
+
+    // Webcam settings dialog
+    if (showWebcamSettings) {
+        WebcamSettingsDialog(
+            current = uiState.webcamConfig,
+            onSave = { config ->
+                viewModel.saveWebcamConfig(config)
+                showWebcamSettings = false
+            },
+            onDismiss = { showWebcamSettings = false }
+        )
+    }
+
+    // Power dialog
+    if (showPowerDialog) {
+        PowerDialog(
+            devices = powerDevices,
+            onToggle = { name, on -> viewModel.togglePowerDevice(name, on) },
+            onDismiss = { showPowerDialog = false }
         )
     }
 
@@ -217,10 +302,46 @@ fun HomeScreen(
             }
         }
     }
+
+    // GCode result overlay
+    uiState.gcodeResult?.let { msg ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 88.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF1A2A3A),
+                shadowElevation = 8.dp,
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Terminal,
+                        contentDescription = null,
+                        tint = AccentYellow,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(msg, color = OnSurface, fontSize = 13.sp)
+                }
+            }
+        }
+    }
 }
 
+// ── Section Header ─────────────────────────────────────────────────────────────
+
 @Composable
-fun SectionHeader(title: String, onGearClick: () -> Unit) {
+fun SectionHeader(
+    title: String,
+    trailingContent: @Composable (() -> Unit)? = null
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -232,22 +353,11 @@ fun SectionHeader(title: String, onGearClick: () -> Unit) {
             fontSize = 18.sp,
             color = OnSurface
         )
-        Box(
-            modifier = Modifier
-                .size(30.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .clickable { onGearClick() },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Default.Settings,
-                contentDescription = null,
-                tint = AccentBlue,
-                modifier = Modifier.size(18.dp)
-            )
-        }
+        trailingContent?.invoke()
     }
 }
+
+// ── Temperature Grid ───────────────────────────────────────────────────────────
 
 @Composable
 fun TemperatureGrid(
@@ -287,82 +397,94 @@ fun TempCard(
         else -> temp.name
     }
     val targetText = if (temp.target == 0f) "Aus" else "→ %.0f°C".format(temp.target)
+    val isActive = temp.target > 0f
 
-    val ratio = (temp.current / 280f).coerceIn(0f, 1f)
-    val topColor = lerp(Color(0xFF1E1E1E), Color(0xFF3D180A), ratio)
-    val bottomColor = lerp(Color(0xFF2D2D2D), Color(0xFF6E2412), ratio)
-    val brush = Brush.verticalGradient(colors = listOf(topColor, bottomColor))
+    val (icon, activeColor) = when {
+        temp.name == "extruder" || temp.name.startsWith("extruder") ->
+            Icons.Default.LocalFireDepartment to Color(0xFFFF6B00)
+        temp.name == "heater_bed" ->
+            Icons.Default.Thermostat to Color(0xFFFF8A00)
+        temp.name.startsWith("heater_generic") ->
+            Icons.Default.LocalFireDepartment to Color(0xFFE64A19)
+        else ->
+            Icons.Default.DeviceThermostat to Color(0xFF4CAF50)
+    }
+    val iconTint = if (isActive) activeColor else OnSurfaceDim.copy(alpha = 0.45f)
 
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(20.dp))
             .background(Color(0xFF1C1C1C))
+            .clickable { onSetTemp() }
     ) {
         Column {
-            // Gradient content area
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(brush)
-                    .padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 14.dp)
+                    .padding(start = 14.dp, end = 12.dp, top = 14.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    displayName,
-                    color = OnSurface.copy(alpha = 0.7f),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "%.1f°C".format(temp.current),
-                    color = OnSurface,
-                    fontSize = 30.sp,
-                    fontWeight = FontWeight.Bold,
-                    lineHeight = 32.sp
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    targetText,
-                    color = OnSurface.copy(alpha = 0.55f),
-                    fontSize = 13.sp
-                )
-                if (temp.power > 0f) {
-                    Spacer(Modifier.height(10.dp))
-                    LinearProgressIndicator(
-                        progress = { temp.power },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(3.dp)
-                            .clip(RoundedCornerShape(2.dp)),
-                        color = AccentBlue,
-                        trackColor = Color.White.copy(alpha = 0.08f)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        displayName,
+                        color = OnSurface,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
-                } else {
                     Spacer(Modifier.height(4.dp))
+                    Text(
+                        "%.1f°C".format(temp.current),
+                        color = OnSurface,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 28.sp
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        targetText,
+                        color = if (isActive) activeColor.copy(alpha = 0.85f) else OnSurfaceDim,
+                        fontSize = 12.sp
+                    )
                 }
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(32.dp)
+                )
             }
-            // Setzen button strip
+            if (temp.power > 0f) {
+                LinearProgressIndicator(
+                    progress = { temp.power },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp),
+                    color = activeColor,
+                    trackColor = Color.White.copy(alpha = 0.06f)
+                )
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(AccentBlue)
-                    .clickable { onSetTemp() }
-                    .padding(vertical = 11.dp),
+                    .background(AccentYellow.copy(alpha = 0.12f))
+                    .padding(vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     "Setzen",
-                    color = Color.White,
+                    color = AccentYellow,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp
+                    fontSize = 12.sp
                 )
             }
         }
     }
 }
 
+// ── Webcam Card ────────────────────────────────────────────────────────────────
+
 @Composable
-fun WebcamCard(host: String) {
+fun WebcamCard(host: String, webcamConfig: WebcamConfig) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -379,15 +501,25 @@ fun WebcamCard(host: String) {
                 Icon(
                     Icons.Default.Videocam,
                     contentDescription = null,
-                    tint = OnSurfaceDim,
+                    tint = AccentYellow,
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(Modifier.width(6.dp))
-                Text("cam 1", color = OnSurfaceDim, fontSize = 12.sp)
+                Text(webcamConfig.name, color = OnSurfaceDim, fontSize = 12.sp)
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xFFFF1744).copy(alpha = 0.85f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 5.dp, vertical = 2.dp)
+                ) {
+                    Text("● Live", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
             }
 
             if (host.isNotBlank()) {
-                val streamUrl = remember(host) { "http://$host/webcam/stream" }
+                val streamUrl = remember(host, webcamConfig.customUrl, webcamConfig.streamType) {
+                    webcamConfig.resolveStreamUrl(host)
+                }
                 key(streamUrl) {
                     AndroidView(
                         factory = { ctx ->
@@ -433,6 +565,375 @@ fun WebcamCard(host: String) {
     }
 }
 
+// ── Bewegungsbereich ───────────────────────────────────────────────────────────
+
+@Composable
+fun BewegungsSection(
+    position: KlipperPosition,
+    onJog: (axis: String, dist: Float) -> Unit,
+    onHome: (axes: String) -> Unit
+) {
+    var stepMm by remember { mutableStateOf(10f) }
+    val stepOptions = listOf(0.1f, 1f, 10f, 50f)
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min)
+        ) {
+            // XY Pad
+            XyPadCard(
+                modifier = Modifier
+                    .weight(2f)
+                    .fillMaxHeight(),
+                stepMm = stepMm,
+                onJog = onJog,
+                onHome = { onHome("XY") }
+            )
+            // Z Pad
+            ZPadCard(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                stepMm = stepMm,
+                onJog = onJog,
+                onHome = { onHome("Z") }
+            )
+            // Step selector
+            StepSelectorCard(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                steps = stepOptions,
+                selected = stepMm,
+                onSelect = { stepMm = it }
+            )
+        }
+        // Position strip
+        PositionStrip(
+            position = position,
+            onHomeAll = { onHome("") }
+        )
+    }
+}
+
+@Composable
+fun XyPadCard(
+    modifier: Modifier = Modifier,
+    stepMm: Float,
+    onJog: (axis: String, dist: Float) -> Unit,
+    onHome: () -> Unit
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xFF1C1C1C)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.padding(8.dp)
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(0.dp)
+            ) {
+                // Y label
+                Text("Y", color = OnSurfaceDim, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(2.dp))
+                // Up
+                JogArrowButton(icon = Icons.Default.KeyboardArrowUp) { onJog("Y", stepMm) }
+                // Middle row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text("X", color = OnSurfaceDim, fontSize = 10.sp, modifier = Modifier.width(16.dp))
+                    JogArrowButton(icon = Icons.Default.KeyboardArrowLeft) { onJog("X", -stepMm) }
+                    // Home button center
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF2A2A2A))
+                            .clickable { onHome() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Home,
+                            contentDescription = "Home XY",
+                            tint = AccentYellow,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    JogArrowButton(icon = Icons.Default.KeyboardArrowRight) { onJog("X", stepMm) }
+                    Spacer(Modifier.width(16.dp))
+                }
+                // Down
+                JogArrowButton(icon = Icons.Default.KeyboardArrowDown) { onJog("Y", -stepMm) }
+            }
+        }
+    }
+}
+
+@Composable
+fun ZPadCard(
+    modifier: Modifier = Modifier,
+    stepMm: Float,
+    onJog: (axis: String, dist: Float) -> Unit,
+    onHome: () -> Unit
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xFF1C1C1C)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceEvenly
+        ) {
+            Text("Z", color = OnSurfaceDim, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+            JogArrowButton(icon = Icons.Default.KeyboardArrowUp) { onJog("Z", stepMm) }
+            // Home Z
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF2A2A2A))
+                    .clickable { onHome() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Home,
+                    contentDescription = "Home Z",
+                    tint = AccentYellow,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            JogArrowButton(icon = Icons.Default.KeyboardArrowDown) { onJog("Z", -stepMm) }
+        }
+    }
+}
+
+@Composable
+fun StepSelectorCard(
+    modifier: Modifier = Modifier,
+    steps: List<Float>,
+    selected: Float,
+    onSelect: (Float) -> Unit
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xFF1C1C1C)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = 12.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceEvenly
+        ) {
+            // Selected step display
+            Text(
+                text = if (selected < 1f) "%.1f".format(selected) else "%.0f".format(selected),
+                color = AccentYellow,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 20.sp
+            )
+            Text("mm", color = OnSurfaceDim, fontSize = 10.sp)
+            Spacer(Modifier.height(4.dp))
+            // Step circles
+            steps.forEach { step ->
+                val isSelected = step == selected
+                Box(
+                    modifier = Modifier
+                        .size(if (isSelected) 22.dp else 14.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isSelected) AccentYellow
+                            else Color(0xFF3A3A3A)
+                        )
+                        .clickable { onSelect(step) }
+                )
+                if (step != steps.last()) Spacer(Modifier.height(6.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun JogArrowButton(
+    icon: ImageVector,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF252525))
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = AccentYellow,
+            modifier = Modifier.size(22.dp)
+        )
+    }
+}
+
+@Composable
+fun PositionStrip(
+    position: KlipperPosition,
+    onHomeAll: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(50.dp),
+        color = Color(0xFF1C1C1C)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PositionLabel("X", position.x)
+            Spacer(Modifier.width(16.dp))
+            PositionLabel("Y", position.y)
+            Spacer(Modifier.width(16.dp))
+            PositionLabel("Z", position.z)
+            Spacer(Modifier.weight(1f))
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF2A2A2A))
+                    .clickable { onHomeAll() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Home,
+                    contentDescription = "Alle homen",
+                    tint = AccentYellow,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PositionLabel(axis: String, value: Float?) {
+    Row(verticalAlignment = Alignment.Baseline) {
+        Text(
+            text = "$axis ",
+            color = OnSurfaceDim,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            text = value?.let { "%.1f".format(it) } ?: "???",
+            color = if (value != null) OnSurface else OnSurfaceDim,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+// ── Power Dialog ───────────────────────────────────────────────────────────────
+
+@Composable
+fun PowerDialog(
+    devices: List<PowerDevice>,
+    onToggle: (String, Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1E1E),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.PowerSettingsNew,
+                    contentDescription = null,
+                    tint = AccentYellow,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    "Drucker-Power",
+                    color = OnSurface,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                devices.forEach { device ->
+                    val isOn = device.status == "on"
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF2A2A2A)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(
+                                    device.name,
+                                    color = OnSurface,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    if (isOn) "Ein" else if (device.status == "error") "Fehler" else "Aus",
+                                    color = when {
+                                        isOn -> AccentYellow
+                                        device.status == "error" -> ErrorRed
+                                        else -> OnSurfaceDim
+                                    },
+                                    fontSize = 12.sp
+                                )
+                            }
+                            Switch(
+                                checked = isOn,
+                                onCheckedChange = { on -> onToggle(device.name, on) },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.Black,
+                                    checkedTrackColor = AccentYellow,
+                                    uncheckedThumbColor = OnSurfaceDim,
+                                    uncheckedTrackColor = Color(0xFF3A3A3A)
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Schließen", color = AccentYellow)
+            }
+        }
+    )
+}
+
+// ── Bottom Control Bar ─────────────────────────────────────────────────────────
+
 @Composable
 fun BottomControlBar(
     printerState: String,
@@ -448,7 +949,7 @@ fun BottomControlBar(
     }
     val statusColor = when (printerState) {
         "ready" -> OnSurface
-        "printing" -> AccentBlue
+        "printing" -> AccentYellow
         "paused" -> Color(0xFFFF9800)
         "error" -> ErrorRed
         else -> OnSurfaceDim
@@ -473,7 +974,10 @@ fun BottomControlBar(
                     .weight(1f)
                     .height(44.dp),
                 shape = RoundedCornerShape(22.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AccentYellow,
+                    contentColor = Color.Black
+                )
             ) {
                 Text(
                     "Druck starten",
@@ -485,7 +989,7 @@ fun BottomControlBar(
             Icon(
                 Icons.Default.LocalFireDepartment,
                 contentDescription = null,
-                tint = if (printerState == "printing") AccentBlue else OnSurfaceDim,
+                tint = if (printerState == "printing") AccentYellow else OnSurfaceDim,
                 modifier = Modifier.size(22.dp)
             )
 
@@ -517,6 +1021,209 @@ fun BottomControlBar(
     }
 }
 
+// ── Webcam Settings Dialog ─────────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WebcamSettingsDialog(
+    current: WebcamConfig,
+    onSave: (WebcamConfig) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf(current.name) }
+    var streamUrl by remember { mutableStateOf(current.customUrl.ifBlank { "/webcam/?action=stream" }) }
+    var snapshotUrl by remember { mutableStateOf(current.snapshotUrl.ifBlank { "/webcam/?action=snapshot" }) }
+    var selectedService by remember { mutableStateOf(current.streamType) }
+    var fps by remember { mutableStateOf(current.fps.toString()) }
+    var selectedRotate by remember { mutableStateOf(current.rotate) }
+    var flipH by remember { mutableStateOf(current.flipH) }
+    var flipV by remember { mutableStateOf(current.flipV) }
+    var serviceExpanded by remember { mutableStateOf(false) }
+    var rotateExpanded by remember { mutableStateOf(false) }
+
+    val textFieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = AccentYellow,
+        focusedLabelColor = AccentYellow,
+        cursorColor = AccentYellow,
+        focusedTextColor = OnSurface,
+        unfocusedTextColor = OnSurface,
+        unfocusedBorderColor = Color(0xFF3A3A3A),
+        unfocusedLabelColor = OnSurfaceDim
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1E1E),
+        title = {
+            Text(
+                "Webcam konfigurieren",
+                color = OnSurface,
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = textFieldColors
+                )
+                OutlinedTextField(
+                    value = streamUrl,
+                    onValueChange = { streamUrl = it },
+                    label = { Text("URL Stream") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = textFieldColors
+                )
+                OutlinedTextField(
+                    value = snapshotUrl,
+                    onValueChange = { snapshotUrl = it },
+                    label = { Text("URL Snapshot") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = textFieldColors
+                )
+                ExposedDropdownMenuBox(
+                    expanded = serviceExpanded,
+                    onExpandedChange = { serviceExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = selectedService.label,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Service") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = serviceExpanded) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        colors = textFieldColors
+                    )
+                    ExposedDropdownMenu(
+                        expanded = serviceExpanded,
+                        onDismissRequest = { serviceExpanded = false },
+                        containerColor = Color(0xFF2A2A2A)
+                    ) {
+                        WebcamStreamType.entries.forEach { type ->
+                            DropdownMenuItem(
+                                text = { Text(type.label, color = OnSurface) },
+                                onClick = { selectedService = type; serviceExpanded = false }
+                            )
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = fps,
+                        onValueChange = { fps = it.filter { c -> c.isDigit() } },
+                        label = { Text("Target FPS") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        colors = textFieldColors
+                    )
+                    ExposedDropdownMenuBox(
+                        expanded = rotateExpanded,
+                        onExpandedChange = { rotateExpanded = it },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        OutlinedTextField(
+                            value = "${selectedRotate}°",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Rotate") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = rotateExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            colors = textFieldColors
+                        )
+                        ExposedDropdownMenu(
+                            expanded = rotateExpanded,
+                            onDismissRequest = { rotateExpanded = false },
+                            containerColor = Color(0xFF2A2A2A)
+                        ) {
+                            listOf(0, 90, 180, 270).forEach { deg ->
+                                DropdownMenuItem(
+                                    text = { Text("${deg}°", color = OnSurface) },
+                                    onClick = { selectedRotate = deg; rotateExpanded = false }
+                                )
+                            }
+                        }
+                    }
+                }
+                Text("Webcam-Bild spiegeln:", color = OnSurfaceDim, fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { flipH = !flipH }
+                    ) {
+                        Checkbox(
+                            checked = flipH,
+                            onCheckedChange = { flipH = it },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = AccentYellow,
+                                checkmarkColor = Color.Black
+                            )
+                        )
+                        Text("horizontal", color = OnSurface, fontSize = 13.sp)
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { flipV = !flipV }
+                    ) {
+                        Checkbox(
+                            checked = flipV,
+                            onCheckedChange = { flipV = it },
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = AccentYellow,
+                                checkmarkColor = Color.Black
+                            )
+                        )
+                        Text("vertikal", color = OnSurface, fontSize = 13.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        current.copy(
+                            name = name.trim(),
+                            customUrl = streamUrl.trim(),
+                            snapshotUrl = snapshotUrl.trim(),
+                            streamType = selectedService,
+                            fps = fps.toIntOrNull() ?: 15,
+                            rotate = selectedRotate,
+                            flipH = flipH,
+                            flipV = flipV
+                        )
+                    )
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AccentYellow,
+                    contentColor = Color.Black
+                )
+            ) {
+                Text("Speichern", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Abbrechen", color = OnSurfaceDim)
+            }
+        }
+    )
+}
+
+// ── Set Temperature Dialog ─────────────────────────────────────────────────────
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SetTempDialog(
@@ -538,7 +1245,7 @@ fun SetTempDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = SurfaceDark,
+        containerColor = Color(0xFF222222),
         title = {
             Text(
                 "Zieltemperatur: $displayName",
@@ -571,14 +1278,13 @@ fun SetTempDialog(
                         onConfirm(target)
                     }),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AccentBlue,
-                        focusedLabelColor = AccentBlue,
-                        cursorColor = AccentBlue,
+                        focusedBorderColor = AccentYellow,
+                        focusedLabelColor = AccentYellow,
+                        cursorColor = AccentYellow,
                         focusedTextColor = OnSurface,
                         unfocusedTextColor = OnSurface
                     )
                 )
-                // Quick presets
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.fillMaxWidth()
@@ -594,8 +1300,8 @@ fun SetTempDialog(
                                 )
                             },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AccentBlue,
-                                selectedLabelColor = Color.White,
+                                selectedContainerColor = AccentYellow,
+                                selectedLabelColor = Color.Black,
                                 containerColor = SurfaceVariant,
                                 labelColor = OnSurfaceDim
                             ),
@@ -603,7 +1309,7 @@ fun SetTempDialog(
                                 enabled = true,
                                 selected = inputValue == preset.toString(),
                                 borderColor = SurfaceVariant,
-                                selectedBorderColor = AccentBlue
+                                selectedBorderColor = AccentYellow
                             )
                         )
                     }
@@ -616,9 +1322,12 @@ fun SetTempDialog(
                     val target = inputValue.toFloatOrNull() ?: 0f
                     onConfirm(target)
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AccentYellow,
+                    contentColor = Color.Black
+                )
             ) {
-                Text("Setzen")
+                Text("Setzen", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {

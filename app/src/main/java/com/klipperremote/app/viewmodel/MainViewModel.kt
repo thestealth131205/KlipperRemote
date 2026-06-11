@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
+import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.WebcamConfig
@@ -29,7 +30,8 @@ data class MainUiState(
     val files: List<PrintFile> = emptyList(),
     val macros: List<String> = emptyList(),
     val pinnedGcodes: List<String> = listOf("G28", "SAVE_CONFIG", "PROBE_CALIBRATE"),
-    val gcodeResult: String? = null
+    val gcodeResult: String? = null,
+    val powerDevices: List<PowerDevice> = emptyList()
 )
 
 @HiltViewModel
@@ -58,11 +60,18 @@ class MainViewModel @Inject constructor(
 
     private fun startPolling() {
         viewModelScope.launch {
+            fetchPowerDevices()
             while (true) {
                 fetchTemperatures()
                 fetchPrinterStatus()
                 fetchPosition()
                 delay(3000L)
+            }
+        }
+        viewModelScope.launch {
+            while (true) {
+                delay(10000L)
+                fetchPowerDevices()
             }
         }
     }
@@ -197,6 +206,27 @@ class MainViewModel @Inject constructor(
     fun saveWebcamConfig(config: WebcamConfig) {
         viewModelScope.launch {
             repository.saveWebcamConfig(config)
+        }
+    }
+
+    private fun fetchPowerDevices() {
+        viewModelScope.launch {
+            repository.getPowerDevices()
+                .onSuccess { devices ->
+                    _uiState.update { it.copy(powerDevices = devices) }
+                }
+        }
+    }
+
+    fun togglePowerDevice(device: String, on: Boolean) {
+        viewModelScope.launch {
+            repository.togglePowerDevice(device, on)
+                .onSuccess {
+                    fetchPowerDevices()
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(error = "Power-Fehler: ${e.message}") }
+                }
         }
     }
 

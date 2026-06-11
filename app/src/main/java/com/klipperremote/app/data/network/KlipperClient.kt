@@ -2,6 +2,7 @@ package com.klipperremote.app.data.network
 
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
+import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
@@ -224,6 +225,39 @@ class KlipperClient(private val config: KlipperConfig) {
             macros.sorted()
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    // Power-Geräte (Moonraker device_power) abfragen
+    suspend fun getPowerDevices(): List<PowerDevice> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$baseUrl/machine/device_power/devices").get().build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext emptyList()
+            val json = JSONObject(body)
+            val devices = json.optJSONObject("result")?.optJSONArray("devices")
+                ?: return@withContext emptyList()
+            val list = mutableListOf<PowerDevice>()
+            for (i in 0 until devices.length()) {
+                val d = devices.optJSONObject(i) ?: continue
+                list.add(PowerDevice(name = d.optString("device", ""), status = d.optString("status", "off")))
+            }
+            list
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // Power-Gerät ein-/ausschalten
+    suspend fun togglePowerDevice(device: String, on: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val action = if (on) "on" else "off"
+            val req = Request.Builder()
+                .url("$baseUrl/machine/device_power/device?device=$device&action=$action")
+                .post("".toRequestBody("application/json".toMediaType()))
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
         }
     }
 

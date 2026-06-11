@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
+import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
@@ -32,7 +33,12 @@ class KlipperRepository @Inject constructor(
 
         val KEY_WEBCAM_NAME = stringPreferencesKey("webcam_name")
         val KEY_WEBCAM_URL = stringPreferencesKey("webcam_custom_url")
+        val KEY_WEBCAM_SNAPSHOT_URL = stringPreferencesKey("webcam_snapshot_url")
         val KEY_WEBCAM_STREAM_TYPE = stringPreferencesKey("webcam_stream_type")
+        val KEY_WEBCAM_FPS = intPreferencesKey("webcam_fps")
+        val KEY_WEBCAM_ROTATE = intPreferencesKey("webcam_rotate")
+        val KEY_WEBCAM_FLIP_H = stringPreferencesKey("webcam_flip_h")
+        val KEY_WEBCAM_FLIP_V = stringPreferencesKey("webcam_flip_v")
         val KEY_WEBCAM_STUN = stringPreferencesKey("webcam_stun_server")
         val KEY_WEBCAM_ICE_USER = stringPreferencesKey("webcam_ice_username")
         val KEY_WEBCAM_ICE_PASS = stringPreferencesKey("webcam_ice_password")
@@ -52,9 +58,14 @@ class KlipperRepository @Inject constructor(
         WebcamConfig(
             name = prefs[KEY_WEBCAM_NAME] ?: "cam 1",
             customUrl = prefs[KEY_WEBCAM_URL] ?: "",
+            snapshotUrl = prefs[KEY_WEBCAM_SNAPSHOT_URL] ?: "",
             streamType = prefs[KEY_WEBCAM_STREAM_TYPE]?.let {
                 runCatching { WebcamStreamType.valueOf(it) }.getOrNull()
             } ?: WebcamStreamType.MJPEG,
+            fps = prefs[KEY_WEBCAM_FPS] ?: 15,
+            rotate = prefs[KEY_WEBCAM_ROTATE] ?: 0,
+            flipH = prefs[KEY_WEBCAM_FLIP_H] == "true",
+            flipV = prefs[KEY_WEBCAM_FLIP_V] == "true",
             stunServer = prefs[KEY_WEBCAM_STUN] ?: "stun:stun.l.google.com:19302",
             iceUsername = prefs[KEY_WEBCAM_ICE_USER] ?: "",
             icePassword = prefs[KEY_WEBCAM_ICE_PASS] ?: ""
@@ -75,7 +86,12 @@ class KlipperRepository @Inject constructor(
         dataStore.edit { prefs ->
             prefs[KEY_WEBCAM_NAME] = config.name
             prefs[KEY_WEBCAM_URL] = config.customUrl
+            prefs[KEY_WEBCAM_SNAPSHOT_URL] = config.snapshotUrl
             prefs[KEY_WEBCAM_STREAM_TYPE] = config.streamType.name
+            prefs[KEY_WEBCAM_FPS] = config.fps
+            prefs[KEY_WEBCAM_ROTATE] = config.rotate
+            prefs[KEY_WEBCAM_FLIP_H] = config.flipH.toString()
+            prefs[KEY_WEBCAM_FLIP_V] = config.flipV.toString()
             prefs[KEY_WEBCAM_STUN] = config.stunServer
             prefs[KEY_WEBCAM_ICE_USER] = config.iceUsername
             prefs[KEY_WEBCAM_ICE_PASS] = config.icePassword
@@ -146,5 +162,17 @@ class KlipperRepository @Inject constructor(
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
         return runCatching { KlipperClient(config).getPosition() }
+    }
+
+    suspend fun getPowerDevices(): Result<List<PowerDevice>> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).getPowerDevices() }
+    }
+
+    suspend fun togglePowerDevice(device: String, on: Boolean): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).togglePowerDevice(device, on)
     }
 }
