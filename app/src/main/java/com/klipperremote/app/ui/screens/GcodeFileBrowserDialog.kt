@@ -80,7 +80,9 @@ fun GcodeFileBrowserDialog(
                     }
                 } else {
                     LazyColumn(
-                        modifier = Modifier.padding(vertical = 8.dp),
+                        modifier = Modifier
+                            .heightIn(max = 460.dp)
+                            .padding(vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {

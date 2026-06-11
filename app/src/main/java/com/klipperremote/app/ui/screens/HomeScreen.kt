@@ -650,7 +650,7 @@ fun BewegungsSection(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(IntrinsicSize.Min)
+                .height(220.dp)
         ) {
             // XY Pad
             XyPadCard(
