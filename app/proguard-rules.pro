@@ -1,0 +1,1 @@
+-keep class com.klipperremote.app.data.model.** { *; }

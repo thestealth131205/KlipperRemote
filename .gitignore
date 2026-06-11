@@ -1,0 +1,32 @@
+# ── Sensitive / signing — NEVER commit ──────────────────────
+keystore/
+*.jks
+*.keystore
+keystore.properties
+*.env
+.env
+.server-credentials
+local.properties
+
+# ── Gradle / build ──────────────────────────────────────────
+.gradle/
+build/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# ── Android Studio / IntelliJ ───────────────────────────────
+.idea/
+*.iml
+.cxx/
+
+# ── OS ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Misc ────────────────────────────────────────────────────
+*.log
+/tmp/
