@@ -111,14 +111,12 @@ class MainViewModel @Inject constructor(
 
     fun fetchTemperatures() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
             repository.getTemperatures()
                 .onSuccess { temps ->
                     _uiState.update { it.copy(temperatures = temps, isLoading = false) }
                 }
-                .onFailure { e ->
-                    _uiState.update { it.copy(isLoading = false, error = e.message) }
-                }
+                // Polling-Fehler (timeout, offline) werden still ignoriert –
+                // die "Offline"-Anzeige in der Bottom-Bar signalisiert den Status bereits.
         }
     }
 

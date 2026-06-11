@@ -155,28 +155,26 @@ fun HomeScreen(
                         }
                     }
 
-                    // Temperaturen header with optional power button
+                    // Temperaturen header with power button (always visible)
                     item {
                         SectionHeader(title = "Temperaturen") {
-                            if (powerDevices.isNotEmpty()) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (isPowerOn) AccentYellow.copy(alpha = 0.15f)
-                                            else Color.Transparent
-                                        )
-                                        .clickable { showPowerDialog = true },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.PowerSettingsNew,
-                                        contentDescription = "Drucker-Power",
-                                        tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f),
-                                        modifier = Modifier.size(20.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isPowerOn) AccentYellow.copy(alpha = 0.15f)
+                                        else Color.Transparent
                                     )
-                                }
+                                    .clickable { showPowerDialog = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.PowerSettingsNew,
+                                    contentDescription = "Drucker-Power",
+                                    tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
                         }
                     }

@@ -67,8 +67,8 @@ data class WebcamConfig(
                 // relative path → geht durch Moonraker → API-Key anhängen
                 "http://$host:$port$customUrl$keyParam"
             } else {
-                // absolute URL (z.B. direkt auf Port 8080) → kein Moonraker-Auth nötig
-                customUrl
+                // absolute URL (z.B. direkt auf Port 8080) → Token anhängen falls gesetzt
+                if (apiKey.isNotBlank()) "$customUrl&token=$apiKey" else customUrl
             }
         }
         if (host.isBlank()) return ""
