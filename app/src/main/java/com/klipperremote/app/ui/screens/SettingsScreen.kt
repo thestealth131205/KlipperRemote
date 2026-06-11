@@ -35,10 +35,7 @@ fun SettingsScreen(
 
     var host by remember(config.host) { mutableStateOf(config.host) }
     var port by remember(config.port) { mutableStateOf(config.port.toString()) }
-    var username by remember(config.username) { mutableStateOf(config.username) }
-    var password by remember(config.password) { mutableStateOf(config.password) }
     var apiKey by remember(config.apiKey) { mutableStateOf(config.apiKey) }
-    var showPassword by remember { mutableStateOf(false) }
     var showApiKey by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
 
@@ -103,46 +100,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // Optional: Auth
-            Text(
-                text = "Authentifizierung (optional)",
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            OutlinedTextField(
-                value = username,
-                onValueChange = { username = it },
-                label = { Text("Benutzername") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
-            )
-
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Passwort") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                    IconButton(onClick = { showPassword = !showPassword }) {
-                        Icon(
-                            if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = null
-                        )
-                    }
-                },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Password,
-                    imeAction = ImeAction.Next
-                )
-            )
-
-            HorizontalDivider()
-
             // Optional: API Key
             Text(
                 text = "API Key (optional)",
@@ -182,8 +139,8 @@ fun SettingsScreen(
                         KlipperConfig(
                             host = host.trim(),
                             port = portInt,
-                            username = username.trim(),
-                            password = password,
+                            username = "",
+                            password = "",
                             apiKey = apiKey.trim()
                         )
                     )

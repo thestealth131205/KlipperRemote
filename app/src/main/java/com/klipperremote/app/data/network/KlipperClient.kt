@@ -49,7 +49,19 @@ class KlipperClient(private val config: KlipperConfig) {
         .build()
 
     private val baseUrl: String
-        get() = "http://${config.host}:${config.port}"
+        get() {
+            // Host bereinigen: Protokoll-Präfix und ggf. eingetippten Port entfernen
+            val rawHost = config.host
+                .removePrefix("https://")
+                .removePrefix("http://")
+                .trim()
+            // Falls der User bereits "host:port" eingegeben hat, Port nicht doppeln
+            return if (rawHost.contains(':')) {
+                "http://$rawHost"
+            } else {
+                "http://$rawHost:${config.port}"
+            }
+        }
 
     // Gibt alle verfügbaren Temperaturen zurück
     suspend fun getTemperatures(): List<TemperatureInfo> = withContext(Dispatchers.IO) {
