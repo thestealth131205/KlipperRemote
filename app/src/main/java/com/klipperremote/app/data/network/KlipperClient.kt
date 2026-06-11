@@ -196,7 +196,7 @@ class KlipperClient(private val config: KlipperConfig) {
             val files = mutableListOf<PrintFile>()
             for (i in 0 until result.length()) {
                 val obj = result.optJSONObject(i) ?: continue
-                val name = obj.optString("filename", "")
+                val name = obj.optString("path", obj.optString("filename", ""))
                 if (name.isBlank()) continue
                 files.add(
                     PrintFile(
@@ -385,6 +385,58 @@ class KlipperClient(private val config: KlipperConfig) {
         } catch (e: Exception) {
             null
         }
+    }
+
+    // Druckpause
+    suspend fun pausePrint(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url("$baseUrl/printer/print/pause")
+                .post("".toRequestBody("application/json".toMediaType()))
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        }
+    }
+
+    // Druck fortsetzen
+    suspend fun resumePrint(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url("$baseUrl/printer/print/resume")
+                .post("".toRequestBody("application/json".toMediaType()))
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        }
+    }
+
+    // Aktuelle Druckgeschwindigkeit aus gcode_move.speed (mm/min → mm/s)
+    suspend fun getPrintSpeed(): Float? = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/printer/objects/query?gcode_move=speed")
+                .get().build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext null
+            val speedMmMin = JSONObject(body)
+                .optJSONObject("result")
+                ?.optJSONObject("status")
+                ?.optJSONObject("gcode_move")
+                ?.optDouble("speed", -1.0)
+                ?.takeIf { it > 0 } ?: return@withContext null
+            (speedMmMin / 60.0).toFloat()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // Webcam-Snapshot herunterladen
+    suspend fun downloadSnapshot(snapshotUrl: String): ByteArray = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url(snapshotUrl).get().build()
+        val resp = client.newCall(req).execute()
+        if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        resp.body?.bytes() ?: error("Leerer Snapshot")
     }
 
     // Konfigurationsdateien auflisten (root=config)

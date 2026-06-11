@@ -35,6 +35,7 @@ class KlipperRepository @Inject constructor(
         val KEY_PASSWORD = stringPreferencesKey("klipper_password")
         val KEY_API_KEY = stringPreferencesKey("klipper_api_key")
         val KEY_CACHED_POWER_DEVICES = stringPreferencesKey("cached_power_devices")
+        val KEY_FAVORITE_MACROS = stringPreferencesKey("favorite_macros")
 
         val KEY_WEBCAM_NAME = stringPreferencesKey("webcam_name")
         val KEY_WEBCAM_URL = stringPreferencesKey("webcam_custom_url")
@@ -101,6 +102,18 @@ class KlipperRepository @Inject constructor(
             prefs[KEY_WEBCAM_ICE_USER] = config.iceUsername
             prefs[KEY_WEBCAM_ICE_PASS] = config.icePassword
         }
+    }
+
+    suspend fun saveFavoriteMacros(favorites: List<String>) {
+        dataStore.edit { prefs ->
+            prefs[KEY_FAVORITE_MACROS] = favorites.joinToString(",")
+        }
+    }
+
+    suspend fun loadFavoriteMacros(): List<String> {
+        val prefs = dataStore.data.first()
+        val raw = prefs[KEY_FAVORITE_MACROS] ?: return emptyList()
+        return raw.split(",").filter { it.isNotBlank() }
     }
 
     suspend fun getTemperatures(): Result<List<TemperatureInfo>> {
@@ -239,6 +252,30 @@ class KlipperRepository @Inject constructor(
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
         return runCatching { KlipperClient(config).detectCrownestCams() }
+    }
+
+    suspend fun pausePrint(): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).pausePrint()
+    }
+
+    suspend fun resumePrint(): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).resumePrint()
+    }
+
+    suspend fun getPrintSpeed(): Result<Float?> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.success(null)
+        return runCatching { KlipperClient(config).getPrintSpeed() }
+    }
+
+    suspend fun downloadSnapshot(snapshotUrl: String): Result<ByteArray> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).downloadSnapshot(snapshotUrl) }
     }
 
     // Power-Gerät-Cache: Format "name:status|name:status"

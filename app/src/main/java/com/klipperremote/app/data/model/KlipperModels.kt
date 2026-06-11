@@ -60,12 +60,26 @@ data class WebcamConfig(
     val iceUsername: String = "",
     val icePassword: String = ""
 ) {
+    fun resolveSnapshotUrl(host: String, port: Int = 7125, apiKey: String = ""): String {
+        val snap = snapshotUrl.ifBlank { return "" }
+        return if (snap.startsWith("/")) {
+            val sep = if (snap.contains("?")) "&" else "?"
+            val keyp = if (apiKey.isNotBlank()) "${sep}apikey=$apiKey" else ""
+            "http://$host:$port$snap$keyp"
+        } else {
+            if (apiKey.isNotBlank()) "$snap&token=$apiKey" else snap
+        }
+    }
+
     fun resolveStreamUrl(host: String, port: Int = 7125, apiKey: String = ""): String {
         val keyParam = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
         if (customUrl.isNotBlank()) {
             return if (customUrl.startsWith("/")) {
                 // relative path → geht durch Moonraker → API-Key anhängen
-                "http://$host:$port$customUrl$keyParam"
+                // Trennzeichen: & wenn URL bereits ? enthält, sonst ?
+                val sep = if (customUrl.contains("?")) "&" else "?"
+                val relKeyParam = if (apiKey.isNotBlank()) "${sep}apikey=$apiKey" else ""
+                "http://$host:$port$customUrl$relKeyParam"
             } else {
                 // absolute URL (z.B. direkt auf Port 8080) → Token anhängen falls gesetzt
                 if (apiKey.isNotBlank()) "$customUrl&token=$apiKey" else customUrl

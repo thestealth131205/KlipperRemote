@@ -38,6 +38,7 @@ data class MainUiState(
     val position: KlipperPosition = KlipperPosition(),
     val files: List<PrintFile> = emptyList(),
     val macros: List<String> = emptyList(),
+    val favoriteMacros: List<String> = emptyList(),
     val pinnedGcodes: List<String> = listOf("G28", "SAVE_CONFIG", "PROBE_CALIBRATE"),
     val gcodeResult: String? = null,
     val powerDevices: List<PowerDevice> = emptyList(),
@@ -53,6 +54,8 @@ data class MainUiState(
     val gcodePreviewLoading: Boolean = false,
     // Druckfortschritt (null = kein aktiver Druck, 0.0–1.0 = aktiv)
     val printProgress: Float? = null,
+    // Aktuelle Druckgeschwindigkeit in mm/s (null = nicht verfügbar)
+    val printSpeedMmPerSec: Float? = null,
     // Maschine / Konfigurationsdateien
     val configFiles: List<ConfigFile> = emptyList(),
     val configFilesLoading: Boolean = false,
@@ -80,8 +83,14 @@ class MainViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            var lastHost = ""
             repository.configFlow.collect { config ->
                 _uiState.update { it.copy(config = config) }
+                // Makros laden sobald ein Host bekannt ist (DataStore lädt async → nicht in init direkt)
+                if (config.host.isNotBlank() && config.host != lastHost) {
+                    lastHost = config.host
+                    loadMacros()
+                }
             }
         }
         viewModelScope.launch {
@@ -96,9 +105,13 @@ class MainViewModel @Inject constructor(
                 _uiState.update { it.copy(powerDevices = cached) }
             }
         }
+        // Favoriten-Makros aus DataStore laden
+        viewModelScope.launch {
+            val favorites = repository.loadFavoriteMacros()
+            _uiState.update { it.copy(favoriteMacros = favorites) }
+        }
         startPolling()
         loadFiles()
-        loadMacros()
         autoDetectWebcamIfNeeded()
     }
 
@@ -118,6 +131,7 @@ class MainViewModel @Inject constructor(
                 queue.enqueueNormal { fetchPrinterStatusInternal() }
                 queue.enqueueNormal { fetchPositionInternal() }
                 queue.enqueueNormal { fetchPrintProgressInternal() }
+                queue.enqueueNormal { fetchPrintSpeedInternal() }
             }
         }
         // Power-Geräte seltener aktualisieren
@@ -154,6 +168,13 @@ class MainViewModel @Inject constructor(
         repository.getPrintProgress()
             .onSuccess { progress ->
                 _uiState.update { it.copy(printProgress = progress) }
+            }
+    }
+
+    private suspend fun fetchPrintSpeedInternal() {
+        repository.getPrintSpeed()
+            .onSuccess { speed ->
+                _uiState.update { it.copy(printSpeedMmPerSec = speed) }
             }
     }
 
@@ -223,6 +244,85 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun motorsOff() {
+        queue.enqueueHigh {
+            repository.sendGcode("M84")
+                .onFailure { e ->
+                    _uiState.update { it.copy(error = "Motor-Fehler: ${e.message}") }
+                }
+        }
+    }
+
+    fun coolDown() {
+        queue.enqueueHigh {
+            repository.sendGcode("TURN_OFF_HEATERS")
+                .onFailure { e ->
+                    _uiState.update { it.copy(error = "Kühl-Fehler: ${e.message}") }
+                }
+        }
+    }
+
+    fun pausePrint() {
+        viewModelScope.launch {
+            repository.pausePrint().onFailure { e ->
+                _uiState.update { it.copy(error = "Pause fehlgeschlagen: ${e.message}") }
+            }
+        }
+    }
+
+    fun resumePrint() {
+        viewModelScope.launch {
+            repository.resumePrint().onFailure { e ->
+                _uiState.update { it.copy(error = "Fortsetzen fehlgeschlagen: ${e.message}") }
+            }
+        }
+    }
+
+    fun saveWebcamSnapshot(context: android.content.Context) {
+        val cfg = _uiState.value.config
+        val snapshotUrl = _uiState.value.webcamConfig.resolveSnapshotUrl(cfg.host, cfg.port, cfg.apiKey)
+        if (snapshotUrl.isBlank()) {
+            _uiState.update { it.copy(error = "Kein Snapshot-URL konfiguriert") }
+            return
+        }
+        viewModelScope.launch {
+            repository.downloadSnapshot(snapshotUrl)
+                .onSuccess { bytes -> saveImageToGallery(context, bytes) }
+                .onFailure { e -> _uiState.update { it.copy(error = "Snapshot: ${e.message}") } }
+        }
+    }
+
+    private suspend fun saveImageToGallery(context: android.content.Context, bytes: ByteArray) {
+        withContext(Dispatchers.IO) {
+            val filename = "klipper_snapshot_${System.currentTimeMillis()}.jpg"
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, filename)
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/KlipperRemote")
+                    put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = context.contentResolver.insert(
+                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+                )
+                uri?.let {
+                    context.contentResolver.openOutputStream(it)?.use { out -> out.write(bytes) }
+                    values.clear()
+                    values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                    context.contentResolver.update(it, values, null, null)
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_PICTURES
+                )
+                val sub = java.io.File(dir, "KlipperRemote")
+                sub.mkdirs()
+                java.io.File(sub, filename).writeBytes(bytes)
+            }
+        }
+    }
+
     fun moveToXyz(x: Float?, y: Float?, z: Float?, feedrate: Int) {
         val parts = mutableListOf<String>()
         x?.let { parts.add("X%.3f".format(it)) }
@@ -261,6 +361,19 @@ class MainViewModel @Inject constructor(
                 .onSuccess { macros ->
                     _uiState.update { it.copy(macros = macros) }
                 }
+        }
+    }
+
+    fun toggleMacroFavorite(macro: String) {
+        val current = _uiState.value.favoriteMacros
+        val updated = if (macro in current) {
+            current - macro
+        } else {
+            if (current.size >= 3) current else current + macro
+        }
+        _uiState.update { it.copy(favoriteMacros = updated) }
+        viewModelScope.launch {
+            repository.saveFavoriteMacros(updated)
         }
     }
 
@@ -472,14 +585,18 @@ class MainViewModel @Inject constructor(
             delay(1000L)
             val host = _uiState.value.config.host
             if (host.isBlank()) return@launch
-            if (_uiState.value.webcamConfig.customUrl.isNotBlank()) return@launch
+            // Generischen Platzhalterwert auch überschreiben (kein echter Nutzer-Eintrag)
+            val savedUrl = _uiState.value.webcamConfig.customUrl
+            val isPlaceholder = savedUrl == "/webcam/?action=stream"
+            if (savedUrl.isNotBlank() && !isPlaceholder) return@launch
 
             queue.enqueueNormal {
                 repository.detectCrownestCams()
                     .onSuccess { cams ->
                         val cam = cams.firstOrNull() ?: return@onSuccess
                         val currentConfig = _uiState.value.webcamConfig
-                        if (currentConfig.customUrl.isNotBlank()) return@onSuccess
+                        val currentUrl = currentConfig.customUrl
+                        if (currentUrl.isNotBlank() && currentUrl != "/webcam/?action=stream") return@onSuccess
                         repository.saveWebcamConfig(
                             currentConfig.copy(
                                 name = cam.name,

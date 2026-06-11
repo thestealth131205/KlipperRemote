@@ -1,13 +1,17 @@
 package com.klipperremote.app.ui.screens
 
+import android.content.res.Configuration
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +25,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
@@ -68,7 +75,8 @@ fun HomeScreen(
                 onOpenWebcamConfig = { showWebcamSettings = true },
                 onNavigateToMachine = onNavigateToMachine,
                 onStartPrint = { showGcodeFileBrowser = true },
-                onNavigateToCrashLog = onNavigateToCrashLog
+                onNavigateToCrashLog = onNavigateToCrashLog,
+                onCoolDown = { viewModel.coolDown() }
             )
         }
     ) { padding ->
@@ -255,17 +263,42 @@ fun HomeScreen(
 
                     // Webcam card
                     item {
+                        val ctx = LocalContext.current
                         WebcamCard(
                             host = uiState.config.host,
                             port = uiState.config.port,
                             webcamConfig = uiState.webcamConfig,
-                            apiKey = uiState.config.apiKey
+                            apiKey = uiState.config.apiKey,
+                            printProgress = uiState.printProgress,
+                            printSpeedMmPerSec = uiState.printSpeedMmPerSec,
+                            temperatures = uiState.temperatures,
+                            position = uiState.position,
+                            printerState = uiState.printerState,
+                            onPausePrint = { viewModel.pausePrint() },
+                            onResumePrint = { viewModel.resumePrint() },
+                            onSaveSnapshot = { viewModel.saveWebcamSnapshot(ctx) }
                         )
                     }
 
                     // Bewegungsbereich header
                     item {
-                        SectionHeader(title = "Bewegen")
+                        SectionHeader(title = "Bewegen") {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF2A2A2A))
+                                    .clickable { viewModel.motorsOff() }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "Motor Abschalten",
+                                    color = OnSurfaceDim,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
                     }
 
                     // Bewegungsbereich
@@ -276,8 +309,10 @@ fun HomeScreen(
                             onHome = { axes -> viewModel.homeAxes(axes) },
                             pinnedGcodes = uiState.pinnedGcodes,
                             macros = uiState.macros,
+                            favoriteMacros = uiState.favoriteMacros,
                             onSendGcode = { viewModel.sendGcode(it) },
-                            onMoveToXyz = { x, y, z, feed -> viewModel.moveToXyz(x, y, z, feed) }
+                            onMoveToXyz = { x, y, z, feed -> viewModel.moveToXyz(x, y, z, feed) },
+                            onToggleFavorite = { viewModel.toggleMacroFavorite(it) }
                         )
                     }
 
@@ -596,7 +631,22 @@ fun TempCard(
 // ── Webcam Card ────────────────────────────────────────────────────────────────
 
 @Composable
-fun WebcamCard(host: String, port: Int = 7125, webcamConfig: WebcamConfig, apiKey: String = "") {
+fun WebcamCard(
+    host: String,
+    port: Int = 7125,
+    webcamConfig: WebcamConfig,
+    apiKey: String = "",
+    printProgress: Float? = null,
+    printSpeedMmPerSec: Float? = null,
+    temperatures: List<TemperatureInfo> = emptyList(),
+    position: com.klipperremote.app.data.model.KlipperPosition = com.klipperremote.app.data.model.KlipperPosition(),
+    printerState: String = "offline",
+    onPausePrint: () -> Unit = {},
+    onResumePrint: () -> Unit = {},
+    onSaveSnapshot: () -> Unit = {}
+) {
+    var showFullscreen by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -632,21 +682,41 @@ fun WebcamCard(host: String, port: Int = 7125, webcamConfig: WebcamConfig, apiKe
                 val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType, apiKey) {
                     webcamConfig.resolveStreamUrl(host, port, apiKey)
                 }
-                key(streamUrl) {
-                    AndroidView(
-                        factory = { ctx ->
-                            WebView(ctx).apply {
-                                settings.javaScriptEnabled = true
-                                settings.loadWithOverviewMode = true
-                                settings.useWideViewPort = true
-                                webViewClient = WebViewClient()
-                                loadUrl(streamUrl)
-                            }
-                        },
+                Box {
+                    key(streamUrl) {
+                        AndroidView(
+                            factory = { ctx ->
+                                WebView(ctx).apply {
+                                    settings.javaScriptEnabled = true
+                                    settings.loadWithOverviewMode = true
+                                    settings.useWideViewPort = true
+                                    webViewClient = WebViewClient()
+                                    loadUrl(streamUrl)
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                        )
+                    }
+                    // Zoom-Button unten rechts
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .height(220.dp)
-                    )
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xAA222222))
+                            .clickable { showFullscreen = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Fullscreen,
+                            contentDescription = "Vollbild",
+                            tint = Color(0xFFAAAAAA),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             } else {
                 Box(
@@ -675,6 +745,160 @@ fun WebcamCard(host: String, port: Int = 7125, webcamConfig: WebcamConfig, apiKe
             }
         }
     }
+
+    if (showFullscreen && host.isNotBlank()) {
+        val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType, apiKey) {
+            webcamConfig.resolveStreamUrl(host, port, apiKey)
+        }
+        WebcamFullscreenDialog(
+            streamUrl = streamUrl,
+            printProgress = printProgress,
+            printSpeedMmPerSec = printSpeedMmPerSec,
+            temperatures = temperatures,
+            position = position,
+            printerState = printerState,
+            onPausePrint = onPausePrint,
+            onResumePrint = onResumePrint,
+            onSaveSnapshot = onSaveSnapshot,
+            onDismiss = { showFullscreen = false }
+        )
+    }
+}
+
+@Composable
+fun WebcamFullscreenDialog(
+    streamUrl: String,
+    printProgress: Float?,
+    printSpeedMmPerSec: Float?,
+    temperatures: List<TemperatureInfo>,
+    position: com.klipperremote.app.data.model.KlipperPosition,
+    printerState: String,
+    onPausePrint: () -> Unit,
+    onResumePrint: () -> Unit,
+    onSaveSnapshot: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            key(streamUrl) {
+                AndroidView(
+                    factory = { ctx ->
+                        WebView(ctx).apply {
+                            settings.javaScriptEnabled = true
+                            settings.loadWithOverviewMode = true
+                            settings.useWideViewPort = true
+                            webViewClient = WebViewClient()
+                            loadUrl(streamUrl)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            // Schließen-Button oben rechts
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xAA000000))
+                    .clickable { onDismiss() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Schließen", tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+
+            if (isLandscape) {
+                val hotend = temperatures.firstOrNull { it.name.startsWith("extruder") }
+                val bed = temperatures.firstOrNull { it.name == "heater_bed" }
+
+                // Stats-Overlay unten links
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(12.dp)
+                        .background(Color(0xBB000000), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    printProgress?.let {
+                        Text("Fortschritt: ${(it * 100).toInt()}%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    }
+                    printSpeedMmPerSec?.let {
+                        Text("Geschw.: ${it.toInt()} mm/s", color = Color.White, fontSize = 12.sp)
+                    }
+                    hotend?.let {
+                        Text("Hotend: ${it.current.toInt()}°C / ${it.target.toInt()}°C", color = Color(0xFFFF8A65), fontSize = 12.sp)
+                    }
+                    bed?.let {
+                        Text("Bett: ${it.current.toInt()}°C / ${it.target.toInt()}°C", color = Color(0xFF90CAF9), fontSize = 12.sp)
+                    }
+                    position.z?.let {
+                        Text("Z-Höhe: ${"%.2f".format(it)} mm", color = Color(0xFFA5D6A7), fontSize = 12.sp)
+                    }
+                }
+
+                // Steuerung rechts
+                val isPaused = printerState == "paused"
+                val isPrinting = printerState == "printing"
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    if (isPrinting || isPaused) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xAA000000))
+                                .clickable { if (isPaused) onResumePrint() else onPausePrint() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                contentDescription = if (isPaused) "Fortsetzen" else "Pause",
+                                tint = Color.White,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xAA000000))
+                            .clickable { onSaveSnapshot() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.CameraAlt,
+                            contentDescription = "Snapshot",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ── Bewegungsbereich ───────────────────────────────────────────────────────────
@@ -686,8 +910,10 @@ fun BewegungsSection(
     onHome: (axes: String) -> Unit,
     pinnedGcodes: List<String> = emptyList(),
     macros: List<String> = emptyList(),
+    favoriteMacros: List<String> = emptyList(),
     onSendGcode: (String) -> Unit = {},
-    onMoveToXyz: (x: Float?, y: Float?, z: Float?, feedrate: Int) -> Unit = { _, _, _, _ -> }
+    onMoveToXyz: (x: Float?, y: Float?, z: Float?, feedrate: Int) -> Unit = { _, _, _, _ -> },
+    onToggleFavorite: (String) -> Unit = {}
 ) {
     var stepMm by remember { mutableStateOf(10f) }
     val stepOptions = listOf(0.1f, 1f, 10f, 50f)
@@ -738,35 +964,124 @@ fun BewegungsSection(
             onHomeAll = { onHome("") },
             onMoveToXyz = onMoveToXyz
         )
-        // Schnellbefehle (pinnedGcodes + Makros aus Klipper-Config)
+        // Makros als Pill-Grid (min. 2 nebeneinander, Favoriten oben)
         if (allCommands.isNotEmpty()) {
-            QuickGcodeRow(commands = allCommands, onSend = onSendGcode)
+            MacroPillGrid(
+                commands = allCommands,
+                favorites = favoriteMacros,
+                onSend = onSendGcode,
+                onToggleFavorite = onToggleFavorite
+            )
         }
     }
 }
 
 @Composable
-fun QuickGcodeRow(commands: List<String>, onSend: (String) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        commands.forEach { cmd ->
-            Surface(
-                shape = RoundedCornerShape(50.dp),
-                color = Color(0xFF1C1C1C),
-                modifier = Modifier.clickable { onSend(cmd) }
+fun MacroPillGrid(
+    commands: List<String>,
+    favorites: List<String>,
+    onSend: (String) -> Unit,
+    onToggleFavorite: (String) -> Unit
+) {
+    val favoriteSet = favorites.toSet()
+    // Favoriten oben, dann Rest – jeweils alphabetisch
+    val ordered = (commands.filter { it in favoriteSet }.sorted() +
+            commands.filter { it !in favoriteSet }.sorted())
+    val chunks = ordered.chunked(2)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        chunks.forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                row.forEach { cmd ->
+                    MacroPill(
+                        modifier = Modifier.weight(1f),
+                        cmd = cmd,
+                        isFavorite = cmd in favoriteSet,
+                        canAddFavorite = favorites.size < 3,
+                        onSend = { onSend(cmd) },
+                        onToggleFavorite = { onToggleFavorite(cmd) }
+                    )
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+fun MacroPill(
+    modifier: Modifier = Modifier,
+    cmd: String,
+    isFavorite: Boolean,
+    canAddFavorite: Boolean,
+    onSend: () -> Unit,
+    onToggleFavorite: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    Box(modifier = modifier) {
+        Surface(
+            shape = RoundedCornerShape(50.dp),
+            color = if (isFavorite) Color(0xFF1C2816) else Color(0xFF1C1C1C),
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { onSend() },
+                        onLongPress = { showMenu = true }
+                    )
+                }
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                if (isFavorite) {
+                    Text(
+                        text = "\u2605 ",
+                        color = Color(0xFFFFD700),
+                        fontSize = 11.sp
+                    )
+                }
                 Text(
                     text = cmd,
                     color = AccentYellow,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+        DropdownMenu(
+            expanded = showMenu,
+            onDismissRequest = { showMenu = false }
+        ) {
+            DropdownMenuItem(
+                text = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (isFavorite) "\u2605" else "\u2606",
+                            color = Color(0xFFFFD700),
+                            fontSize = 16.sp
+                        )
+                        Text(
+                            text = if (isFavorite) "Favorit entfernen" else "Favorisieren",
+                            fontSize = 13.sp
+                        )
+                    }
+                },
+                onClick = {
+                    if (isFavorite || canAddFavorite) onToggleFavorite()
+                    showMenu = false
+                },
+                enabled = isFavorite || canAddFavorite
+            )
         }
     }
 }
@@ -1203,7 +1518,8 @@ fun BottomControlBar(
     onOpenWebcamConfig: () -> Unit,
     onNavigateToMachine: () -> Unit,
     onStartPrint: () -> Unit = {},
-    onNavigateToCrashLog: () -> Unit = {}
+    onNavigateToCrashLog: () -> Unit = {},
+    onCoolDown: () -> Unit = {}
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val statusText = when (printerState) {
@@ -1253,11 +1569,13 @@ fun BottomControlBar(
                 )
             }
 
-            Icon(
-                Icons.Default.LocalFireDepartment,
-                contentDescription = null,
-                tint = if (printerState == "printing") AccentYellow else OnSurfaceDim,
-                modifier = Modifier.size(22.dp)
+            Text(
+                "❄️",
+                fontSize = 22.sp,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable { onCoolDown() }
+                    .padding(2.dp)
             )
 
             Text(
@@ -1657,7 +1975,7 @@ fun PrintFileRow(
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(sizeText, color = OnSurfaceDim, fontSize = 11.sp)
             }
