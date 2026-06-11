@@ -81,8 +81,8 @@ data class WebcamConfig(
                 val relKeyParam = if (apiKey.isNotBlank()) "${sep}apikey=$apiKey" else ""
                 "http://$host:$port$customUrl$relKeyParam"
             } else {
-                // absolute URL (z.B. direkt auf Port 8080) → Token anhängen falls gesetzt
-                if (apiKey.isNotBlank()) "$customUrl&token=$apiKey" else customUrl
+                // absolute URL (z.B. direkt auf Port 8080) → API-Key anhängen falls gesetzt
+                if (apiKey.isNotBlank()) "$customUrl?apikey=$apiKey" else customUrl
             }
         }
         if (host.isBlank()) return ""
