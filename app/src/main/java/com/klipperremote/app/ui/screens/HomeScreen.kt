@@ -1098,7 +1098,7 @@ fun BottomControlBar(
                 DropdownMenu(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false },
-                    containerColor = Color(0xFF1E1E1E)
+                    modifier = Modifier.background(Color(0xFF1E1E1E))
                 ) {
                     Text(
                         "Konfiguration",

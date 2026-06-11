@@ -12,7 +12,6 @@ import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
 import okhttp3.MultipartBody
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -420,17 +419,14 @@ class KlipperClient(private val config: KlipperConfig) {
         try {
             // Typische Dateinamen: crowsnest.conf oder crownest.conf
             val candidates = listOf("crowsnest.conf", "crownest.conf", "crowsnest.cfg", "crownest.cfg")
-            var content: String? = null
-            for (name in candidates) {
+            val raw = candidates.mapNotNull { name ->
                 runCatching {
                     val encoded = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
                     val req = Request.Builder().url("$baseUrl/server/files/config/$encoded").get().build()
                     val resp = client.newCall(req).execute()
-                    if (resp.isSuccessful) content = resp.body?.string()
-                }
-                if (content != null) break
-            }
-            val raw = content ?: return@withContext emptyList()
+                    if (resp.isSuccessful) resp.body?.string() else null
+                }.getOrNull()
+            }.firstOrNull() ?: return@withContext emptyList()
             // INI-Format parsen
             val cams = mutableListOf<CrownestCam>()
             var currentSection: String? = null
