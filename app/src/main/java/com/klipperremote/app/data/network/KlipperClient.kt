@@ -372,7 +372,8 @@ class KlipperClient(private val config: KlipperConfig) {
             val files = mutableListOf<ConfigFile>()
             for (i in 0 until result.length()) {
                 val obj = result.optJSONObject(i) ?: continue
-                val path = obj.optString("path", "").ifBlank { continue }
+                val path = obj.optString("path", "")
+                if (path.isBlank()) continue
                 files.add(
                     ConfigFile(
                         path = path,
