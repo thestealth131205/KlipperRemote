@@ -5,6 +5,8 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import android.graphics.Bitmap
+import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
@@ -174,5 +176,35 @@ class KlipperRepository @Inject constructor(
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
         return KlipperClient(config).togglePowerDevice(device, on)
+    }
+
+    suspend fun getGcodeFileContent(filename: String): Result<String> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).getGcodeFileContent(filename) }
+    }
+
+    suspend fun getBedSize(): Result<Pair<Float, Float>> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.success(Pair(235f, 235f))
+        return runCatching { KlipperClient(config).getBedSize() }
+    }
+
+    suspend fun getGcodeMetadata(filename: String): Result<GcodeMetadata> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).getGcodeMetadata(filename) }
+    }
+
+    suspend fun getPrintProgress(): Result<Float?> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.success(null)
+        return runCatching { KlipperClient(config).getPrintProgress() }
+    }
+
+    suspend fun fetchThumbnail(url: String): Bitmap? {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return null
+        return try { KlipperClient(config).fetchImageBitmap(url) } catch (e: Exception) { null }
     }
 }

@@ -61,7 +61,10 @@ data class WebcamConfig(
     val icePassword: String = ""
 ) {
     fun resolveStreamUrl(host: String): String {
-        if (customUrl.isNotBlank()) return customUrl
+        if (customUrl.isNotBlank()) {
+            // relative path (e.g. "/webcam/?action=stream") → prepend host
+            return if (customUrl.startsWith("/")) "http://$host$customUrl" else customUrl
+        }
         if (host.isBlank()) return ""
         return when (streamType) {
             WebcamStreamType.MJPEG -> "http://$host/webcam/stream"
@@ -88,4 +91,20 @@ data class KlipperPosition(
 data class PowerDevice(
     val name: String,
     val status: String // "on", "off", "error"
+)
+
+data class GCodeSegment(
+    val x1: Float, val y1: Float,
+    val x2: Float, val y2: Float,
+    val isTravel: Boolean
+)
+
+data class GCodeLayer(
+    val zHeight: Float,
+    val segments: List<GCodeSegment>
+)
+
+data class GcodeMetadata(
+    val thumbnailUrl: String? = null,
+    val estimatedTime: Int? = null  // seconds
 )

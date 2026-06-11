@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,6 +32,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
+import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.WebcamConfig
 import com.klipperremote.app.data.model.WebcamStreamType
@@ -40,22 +42,26 @@ import com.klipperremote.app.viewmodel.MainViewModel
 @Composable
 fun HomeScreen(
     onNavigateToSettings: () -> Unit,
+    onOpenGCodeViewer: (String) -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var setTempTarget by remember { mutableStateOf<TemperatureInfo?>(null) }
     var showWebcamSettings by remember { mutableStateOf(false) }
     var showPowerDialog by remember { mutableStateOf(false) }
+    var showGcodeFileBrowser by remember { mutableStateOf(false) }
+    var gcodeConfirmFile by remember { mutableStateOf<String?>(null) }
 
     val powerDevices = uiState.powerDevices
-    val isPowerOn = powerDevices.isNotEmpty() && powerDevices.all { it.status == "on" }
+    val isPowerOn = powerDevices.any { it.status == "on" }
 
     Scaffold(
         containerColor = BackgroundDark,
         bottomBar = {
             BottomControlBar(
                 printerState = uiState.printerState,
-                onNavigateToSettings = onNavigateToSettings
+                onNavigateToSettings = onNavigateToSettings,
+                onStartPrint = { showGcodeFileBrowser = true }
             )
         }
     ) { padding ->
@@ -232,6 +238,32 @@ fun HomeScreen(
                         )
                     }
 
+                    // Druckdateien
+                    if (uiState.files.isNotEmpty()) {
+                        item {
+                            SectionHeader(title = "Druckdateien") {
+                                IconButton(
+                                    onClick = { viewModel.loadFiles() },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "Aktualisieren",
+                                        tint = AccentYellow,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                        items(uiState.files, key = { it.filename }) { file ->
+                            PrintFileRow(
+                                file = file,
+                                onPrint = { viewModel.startPrint(file.filename) },
+                                onViewGCode = { onOpenGCodeViewer(file.filename) }
+                            )
+                        }
+                    }
+
                     // Bottom spacing
                     item { Spacer(Modifier.height(8.dp)) }
                 }
@@ -301,6 +333,43 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    // G-Code Datei-Browser
+    if (showGcodeFileBrowser) {
+        GcodeFileBrowserDialog(
+            files = uiState.files,
+            onSelectFile = { filename ->
+                showGcodeFileBrowser = false
+                gcodeConfirmFile = filename
+                viewModel.loadFiles()
+                viewModel.loadGcodePreview(filename)
+            },
+            onPreviewFile = { filename ->
+                showGcodeFileBrowser = false
+                onOpenGCodeViewer(filename)
+            },
+            onDismiss = { showGcodeFileBrowser = false }
+        )
+    }
+
+    // Druck-Bestätigungsdialog
+    gcodeConfirmFile?.let { filename ->
+        GcodePrintConfirmDialog(
+            filename = filename,
+            metadata = uiState.gcodePreviewMetadata,
+            thumbnail = uiState.gcodePreviewThumbnail,
+            isLoading = uiState.gcodePreviewLoading,
+            onConfirm = {
+                viewModel.startPrint(filename)
+                gcodeConfirmFile = null
+                viewModel.clearGcodePreview()
+            },
+            onDismiss = {
+                gcodeConfirmFile = null
+                viewModel.clearGcodePreview()
+            }
+        )
     }
 
     // GCode result overlay
@@ -937,7 +1006,8 @@ fun PowerDialog(
 @Composable
 fun BottomControlBar(
     printerState: String,
-    onNavigateToSettings: () -> Unit
+    onNavigateToSettings: () -> Unit,
+    onStartPrint: () -> Unit = {}
 ) {
     val statusText = when (printerState) {
         "ready" -> "Leerlauf"
@@ -969,7 +1039,7 @@ fun BottomControlBar(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Button(
-                onClick = { /* TODO: Druckjob starten */ },
+                onClick = onStartPrint,
                 modifier = Modifier
                     .weight(1f)
                     .height(44.dp),
@@ -1218,6 +1288,69 @@ fun WebcamSettingsDialog(
             }
         }
     )
+}
+
+// ── Print File Row ──────────────────────────────────────────────────────────────
+
+@Composable
+fun PrintFileRow(
+    file: PrintFile,
+    onPrint: () -> Unit,
+    onViewGCode: () -> Unit
+) {
+    val sizeText = when {
+        file.size >= 1_048_576 -> "%.1f MB".format(file.size / 1_048_576f)
+        file.size >= 1_024 -> "%.0f KB".format(file.size / 1_024f)
+        else -> "${file.size} B"
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = Color(0xFF1C1C1C)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Description,
+                contentDescription = null,
+                tint = OnSurfaceDim,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    file.filename.substringAfterLast('/'),
+                    color = OnSurface,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+                Text(sizeText, color = OnSurfaceDim, fontSize = 11.sp)
+            }
+            // G-Code Viewer Button
+            IconButton(onClick = onViewGCode, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Default.Layers,
+                    contentDescription = "G-Code anzeigen",
+                    tint = AccentYellow,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            // Druck starten Button
+            IconButton(onClick = onPrint, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = "Druck starten",
+                    tint = Color(0xFF4CAF50),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
 }
 
 // ── Set Temperature Dialog ─────────────────────────────────────────────────────

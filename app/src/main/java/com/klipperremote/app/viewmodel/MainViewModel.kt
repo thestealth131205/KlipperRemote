@@ -1,13 +1,19 @@
 package com.klipperremote.app.viewmodel
 
+import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.klipperremote.app.data.model.GCodeLayer
+import com.klipperremote.app.data.model.GCodeSegment
+import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.WebcamConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.klipperremote.app.data.repository.KlipperRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
@@ -31,7 +37,18 @@ data class MainUiState(
     val macros: List<String> = emptyList(),
     val pinnedGcodes: List<String> = listOf("G28", "SAVE_CONFIG", "PROBE_CALIBRATE"),
     val gcodeResult: String? = null,
-    val powerDevices: List<PowerDevice> = emptyList()
+    val powerDevices: List<PowerDevice> = emptyList(),
+    // G-Code Viewer
+    val gcodeViewerLayers: List<GCodeLayer> = emptyList(),
+    val gcodeViewerLoading: Boolean = false,
+    val gcodeViewerError: String? = null,
+    val gcodeViewerBedSize: Pair<Float, Float> = Pair(235f, 235f),
+    // G-Code Datei-Vorschau (für Druck-Bestätigungsdialog)
+    val gcodePreviewMetadata: GcodeMetadata? = null,
+    val gcodePreviewThumbnail: Bitmap? = null,
+    val gcodePreviewLoading: Boolean = false,
+    // Druckfortschritt (null = kein aktiver Druck, 0.0–1.0 = aktiv)
+    val printProgress: Float? = null
 )
 
 @HiltViewModel
@@ -65,6 +82,7 @@ class MainViewModel @Inject constructor(
                 fetchTemperatures()
                 fetchPrinterStatus()
                 fetchPosition()
+                fetchPrintProgress()
                 delay(3000L)
             }
         }
@@ -94,6 +112,15 @@ class MainViewModel @Inject constructor(
             repository.getPrinterStatus()
                 .onSuccess { status ->
                     _uiState.update { it.copy(printerState = status.state) }
+                }
+        }
+    }
+
+    private fun fetchPrintProgress() {
+        viewModelScope.launch {
+            repository.getPrintProgress()
+                .onSuccess { progress ->
+                    _uiState.update { it.copy(printProgress = progress) }
                 }
         }
     }
@@ -232,6 +259,103 @@ class MainViewModel @Inject constructor(
 
     fun clearError() {
         _uiState.update { it.copy(error = null) }
+    }
+
+    fun loadGcodePreview(filename: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(gcodePreviewLoading = true, gcodePreviewMetadata = null, gcodePreviewThumbnail = null) }
+            repository.getGcodeMetadata(filename)
+                .onSuccess { meta ->
+                    _uiState.update { it.copy(gcodePreviewMetadata = meta, gcodePreviewLoading = false) }
+                    if (meta.thumbnailUrl != null) {
+                        val bmp = repository.fetchThumbnail(meta.thumbnailUrl)
+                        _uiState.update { it.copy(gcodePreviewThumbnail = bmp) }
+                    }
+                }
+                .onFailure {
+                    _uiState.update { it.copy(gcodePreviewLoading = false) }
+                }
+        }
+    }
+
+    fun clearGcodePreview() {
+        _uiState.update { it.copy(gcodePreviewMetadata = null, gcodePreviewThumbnail = null, gcodePreviewLoading = false) }
+    }
+
+    fun loadGCodeViewer(filename: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(gcodeViewerLoading = true, gcodeViewerError = null, gcodeViewerLayers = emptyList()) }
+            // Bettgröße laden
+            repository.getBedSize().onSuccess { bed ->
+                _uiState.update { it.copy(gcodeViewerBedSize = bed) }
+            }
+            // G-Code-Datei laden und parsen
+            repository.getGcodeFileContent(filename)
+                .onSuccess { content ->
+                    val layers = withContext(Dispatchers.Default) { parseGCode(content) }
+                    _uiState.update { it.copy(gcodeViewerLayers = layers, gcodeViewerLoading = false) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(gcodeViewerLoading = false, gcodeViewerError = e.message) }
+                }
+        }
+    }
+
+    fun clearGCodeViewer() {
+        _uiState.update { it.copy(gcodeViewerLayers = emptyList(), gcodeViewerError = null, gcodeViewerLoading = false) }
+    }
+
+    private fun parseGCode(content: String): List<GCodeLayer> {
+        val layers = mutableListOf<GCodeLayer>()
+        var currentZ = -1f
+        var currentX = 0f
+        var currentY = 0f
+        val currentSegments = mutableListOf<GCodeSegment>()
+
+        for (rawLine in content.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.isBlank() || line.startsWith(";")) continue
+            val cmdLine = line.substringBefore(';').trim().uppercase()
+            val parts = cmdLine.split("\\s+".toRegex())
+            val cmd = parts.firstOrNull() ?: continue
+            if (cmd != "G0" && cmd != "G1") continue
+
+            var newX = currentX
+            var newY = currentY
+            var newZ = currentZ
+            var hasE = false
+
+            for (i in 1 until parts.size) {
+                val p = parts[i]
+                when {
+                    p.startsWith("X") -> newX = p.drop(1).toFloatOrNull() ?: currentX
+                    p.startsWith("Y") -> newY = p.drop(1).toFloatOrNull() ?: currentY
+                    p.startsWith("Z") -> newZ = p.drop(1).toFloatOrNull() ?: currentZ
+                    p.startsWith("E") -> hasE = true
+                }
+            }
+
+            // Neue Schicht bei Z-Änderung
+            if (newZ != currentZ && newZ >= 0f) {
+                if (currentSegments.isNotEmpty() && currentZ >= 0f) {
+                    layers.add(GCodeLayer(currentZ, currentSegments.toList()))
+                    currentSegments.clear()
+                }
+                currentZ = newZ
+            }
+
+            if (currentZ >= 0f && (newX != currentX || newY != currentY)) {
+                val isTravel = cmd == "G0" || !hasE
+                currentSegments.add(GCodeSegment(currentX, currentY, newX, newY, isTravel))
+            }
+
+            currentX = newX; currentY = newY
+        }
+
+        if (currentSegments.isNotEmpty() && currentZ >= 0f) {
+            layers.add(GCodeLayer(currentZ, currentSegments.toList()))
+        }
+        return layers
     }
 
     private fun showGcodeResult(msg: String) {

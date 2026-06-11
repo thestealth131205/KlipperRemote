@@ -1,11 +1,15 @@
 package com.klipperremote.app.data.network
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
+import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Credentials
@@ -248,6 +252,79 @@ class KlipperClient(private val config: KlipperConfig) {
         }
     }
 
+    // G-Code-Datei herunterladen (Rohinhalt)
+    suspend fun getGcodeFileContent(filename: String): String = withContext(Dispatchers.IO) {
+        val encoded = URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
+        val req = Request.Builder().url("$baseUrl/server/files/gcodes/$encoded").get().build()
+        val resp = client.newCall(req).execute()
+        if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        resp.body?.string() ?: ""
+    }
+
+    // G-Code Metadaten (Vorschaubild + Druckzeit) via Moonraker laden
+    suspend fun getGcodeMetadata(filename: String): GcodeMetadata = withContext(Dispatchers.IO) {
+        try {
+            val encoded = URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
+            val req = Request.Builder().url("$baseUrl/server/files/metadata?filename=$encoded").get().build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) return@withContext GcodeMetadata()
+            val body = resp.body?.string() ?: return@withContext GcodeMetadata()
+            val result = JSONObject(body).optJSONObject("result") ?: return@withContext GcodeMetadata()
+            val estimatedTime = result.optInt("estimated_time", 0).takeIf { it > 0 }
+            val thumbnails = result.optJSONArray("thumbnails")
+            var thumbnailUrl: String? = null
+            if (thumbnails != null) {
+                var maxSize = 0
+                var relPath: String? = null
+                for (i in 0 until thumbnails.length()) {
+                    val t = thumbnails.optJSONObject(i) ?: continue
+                    val sz = t.optInt("size", 0)
+                    if (sz > maxSize) {
+                        maxSize = sz
+                        relPath = t.optString("relative_path").takeIf { it.isNotBlank() }
+                    }
+                }
+                if (relPath != null) {
+                    thumbnailUrl = "$baseUrl/server/files/gcodes/$relPath"
+                }
+            }
+            GcodeMetadata(thumbnailUrl = thumbnailUrl, estimatedTime = estimatedTime)
+        } catch (e: Exception) {
+            GcodeMetadata()
+        }
+    }
+
+    // Bild-Bytes von URL laden (für Vorschaubilder)
+    suspend fun fetchImageBitmap(url: String): Bitmap? = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url(url).get().build()
+            val resp = client.newCall(req).execute()
+            val bytes = resp.body?.bytes() ?: return@withContext null
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // Druckbettgröße aus Klipper-Konfiguration lesen
+    suspend fun getBedSize(): Pair<Float, Float> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$baseUrl/printer/objects/query?configfile=").get().build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext Pair(235f, 235f)
+            val json = JSONObject(body)
+            val settings = json.optJSONObject("result")
+                ?.optJSONObject("status")
+                ?.optJSONObject("configfile")
+                ?.optJSONObject("settings")
+            val xMax = settings?.optJSONObject("stepper_x")?.optDouble("position_max", 235.0)?.toFloat() ?: 235f
+            val yMax = settings?.optJSONObject("stepper_y")?.optDouble("position_max", 235.0)?.toFloat() ?: 235f
+            Pair(xMax, yMax)
+        } catch (e: Exception) {
+            Pair(235f, 235f)
+        }
+    }
+
     // Power-Gerät ein-/ausschalten
     suspend fun togglePowerDevice(device: String, on: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
@@ -258,6 +335,26 @@ class KlipperClient(private val config: KlipperConfig) {
                 .build()
             val resp = client.newCall(req).execute()
             if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        }
+    }
+
+    // Druckfortschritt abfragen (0.0–1.0, null = kein aktiver Druck)
+    suspend fun getPrintProgress(): Float? = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/printer/objects/query?virtual_sdcard=&print_stats=")
+                .get().build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext null
+            val status = JSONObject(body)
+                .optJSONObject("result")
+                ?.optJSONObject("status") ?: return@withContext null
+            val state = status.optJSONObject("print_stats")?.optString("state", "") ?: ""
+            if (state != "printing" && state != "paused") return@withContext null
+            status.optJSONObject("virtual_sdcard")?.optDouble("progress", -1.0)
+                ?.takeIf { it >= 0.0 }?.toFloat()
+        } catch (e: Exception) {
+            null
         }
     }
 
