@@ -227,7 +227,8 @@ fun HomeScreen(
                         WebcamCard(
                             host = uiState.config.host,
                             port = uiState.config.port,
-                            webcamConfig = uiState.webcamConfig
+                            webcamConfig = uiState.webcamConfig,
+                            apiKey = uiState.config.apiKey
                         )
                     }
 
@@ -560,7 +561,7 @@ fun TempCard(
 // ── Webcam Card ────────────────────────────────────────────────────────────────
 
 @Composable
-fun WebcamCard(host: String, port: Int = 7125, webcamConfig: WebcamConfig) {
+fun WebcamCard(host: String, port: Int = 7125, webcamConfig: WebcamConfig, apiKey: String = "") {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -593,8 +594,8 @@ fun WebcamCard(host: String, port: Int = 7125, webcamConfig: WebcamConfig) {
             }
 
             if (host.isNotBlank()) {
-                val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType) {
-                    webcamConfig.resolveStreamUrl(host, port)
+                val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType, apiKey) {
+                    webcamConfig.resolveStreamUrl(host, port, apiKey)
                 }
                 key(streamUrl) {
                     AndroidView(

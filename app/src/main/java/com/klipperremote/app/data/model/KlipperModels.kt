@@ -60,17 +60,23 @@ data class WebcamConfig(
     val iceUsername: String = "",
     val icePassword: String = ""
 ) {
-    fun resolveStreamUrl(host: String, port: Int = 7125): String {
+    fun resolveStreamUrl(host: String, port: Int = 7125, apiKey: String = ""): String {
+        val keyParam = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
         if (customUrl.isNotBlank()) {
-            // relative path (e.g. "/webcam/?action=stream") → prepend host with port
-            return if (customUrl.startsWith("/")) "http://$host:$port$customUrl" else customUrl
+            return if (customUrl.startsWith("/")) {
+                // relative path → geht durch Moonraker → API-Key anhängen
+                "http://$host:$port$customUrl$keyParam"
+            } else {
+                // absolute URL (z.B. direkt auf Port 8080) → kein Moonraker-Auth nötig
+                customUrl
+            }
         }
         if (host.isBlank()) return ""
         return when (streamType) {
-            WebcamStreamType.MJPEG -> "http://$host:$port/webcam/stream"
-            WebcamStreamType.WEBRTC -> "http://$host:$port/webcam/webrtc"
-            WebcamStreamType.HLS -> "http://$host:$port/webcam/hls/stream.m3u8"
-            WebcamStreamType.CAMERA_STREAMER -> "http://$host:$port/webcam/stream"
+            WebcamStreamType.MJPEG -> "http://$host:$port/webcam/stream$keyParam"
+            WebcamStreamType.WEBRTC -> "http://$host:$port/webcam/webrtc$keyParam"
+            WebcamStreamType.HLS -> "http://$host:$port/webcam/hls/stream.m3u8$keyParam"
+            WebcamStreamType.CAMERA_STREAMER -> "http://$host:$port/webcam/stream$keyParam"
         }
     }
 }
