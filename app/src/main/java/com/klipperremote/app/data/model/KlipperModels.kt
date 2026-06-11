@@ -58,39 +58,45 @@ data class WebcamConfig(
     val flipV: Boolean = false,
     val stunServer: String = "stun:stun.l.google.com:19302",
     val iceUsername: String = "",
-    val icePassword: String = ""
+    val icePassword: String = "",
+    // Separater Webcam-Port (0 = Moonraker-Port als Fallback)
+    val webcamPort: Int = 0
 ) {
-    fun resolveSnapshotUrl(host: String, port: Int = 7125, apiKey: String = ""): String {
+    /** Effektiver Port: webcamPort wenn gesetzt, sonst Moonraker-Port */
+    private fun effectivePort(moonrakerPort: Int) = if (webcamPort > 0) webcamPort else moonrakerPort
+
+    fun resolveSnapshotUrl(host: String, moonrakerPort: Int = 7125, apiKey: String = ""): String {
         val snap = snapshotUrl.ifBlank { return "" }
+        val ePort = effectivePort(moonrakerPort)
         return if (snap.startsWith("/")) {
             val sep = if (snap.contains("?")) "&" else "?"
             val keyp = if (apiKey.isNotBlank()) "${sep}apikey=$apiKey" else ""
-            "http://$host:$port$snap$keyp"
+            "http://$host:$ePort$snap$keyp"
         } else {
-            if (apiKey.isNotBlank()) "$snap&token=$apiKey" else snap
+            if (apiKey.isNotBlank()) "$snap?apikey=$apiKey" else snap
         }
     }
 
-    fun resolveStreamUrl(host: String, port: Int = 7125, apiKey: String = ""): String {
+    fun resolveStreamUrl(host: String, moonrakerPort: Int = 7125, apiKey: String = ""): String {
+        val ePort = effectivePort(moonrakerPort)
         val keyParam = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
         if (customUrl.isNotBlank()) {
             return if (customUrl.startsWith("/")) {
-                // relative path → geht durch Moonraker → API-Key anhängen
-                // Trennzeichen: & wenn URL bereits ? enthält, sonst ?
+                // Relativer Pfad → host:effectivePort + Pfad + API-Key
                 val sep = if (customUrl.contains("?")) "&" else "?"
                 val relKeyParam = if (apiKey.isNotBlank()) "${sep}apikey=$apiKey" else ""
-                "http://$host:$port$customUrl$relKeyParam"
+                "http://$host:$ePort$customUrl$relKeyParam"
             } else {
-                // absolute URL (z.B. direkt auf Port 8080) → API-Key anhängen falls gesetzt
+                // Absolute URL (Rückwärtskompatibilität) → unverändert + API-Key
                 if (apiKey.isNotBlank()) "$customUrl?apikey=$apiKey" else customUrl
             }
         }
         if (host.isBlank()) return ""
         return when (streamType) {
-            WebcamStreamType.MJPEG -> "http://$host:$port/webcam/stream$keyParam"
-            WebcamStreamType.WEBRTC -> "http://$host:$port/webcam/webrtc$keyParam"
-            WebcamStreamType.HLS -> "http://$host:$port/webcam/hls/stream.m3u8$keyParam"
-            WebcamStreamType.CAMERA_STREAMER -> "http://$host:$port/webcam/stream$keyParam"
+            WebcamStreamType.MJPEG -> "http://$host:$ePort/webcam/stream$keyParam"
+            WebcamStreamType.WEBRTC -> "http://$host:$ePort/webcam/webrtc$keyParam"
+            WebcamStreamType.HLS -> "http://$host:$ePort/webcam/hls/stream.m3u8$keyParam"
+            WebcamStreamType.CAMERA_STREAMER -> "http://$host:$ePort/webcam/stream$keyParam"
         }
     }
 }
@@ -113,10 +119,12 @@ data class PowerDevice(
     val status: String // "on", "off", "error"
 )
 
+enum class MoveType { TRAVEL, PRINT, INFILL, SUPPORT }
+
 data class GCodeSegment(
     val x1: Float, val y1: Float,
     val x2: Float, val y2: Float,
-    val isTravel: Boolean
+    val moveType: MoveType
 )
 
 data class GCodeLayer(

@@ -3,6 +3,7 @@ package com.klipperremote.app.ui.screens
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -21,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.klipperremote.app.data.model.GCodeLayer
+import com.klipperremote.app.data.model.MoveType
 import com.klipperremote.app.ui.theme.*
 import com.klipperremote.app.viewmodel.MainViewModel
 
@@ -166,16 +168,30 @@ fun GCodeViewerScreen(
                             Text("Z: ${"%.3f".format(currentLayer.zHeight)} mm", color = OnSurfaceDim, fontSize = 11.sp)
                             Text("${currentLayer.segments.size} Segmente", color = OnSurfaceDim, fontSize = 11.sp)
                         }
+                        // Legende oben rechts
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .background(SurfaceDark.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            LegendItem(color = Color(0xFFFFD700), label = "Druck")
+                            LegendItem(color = Color(0xFF4CAF50), label = "Infill")
+                            LegendItem(color = Color(0xFFFF4081), label = "Leerfahrt")
+                            LegendItem(color = Color(0xFFFF9800), label = "Stütze")
+                        }
                     }
 
                     // Vertikaler Slider rechts
-                    Box(
+                    BoxWithConstraints(
                         modifier = Modifier
                             .width(56.dp)
                             .fillMaxHeight()
                             .padding(vertical = 16.dp),
                         contentAlignment = Alignment.Center
                     ) {
+                        val sliderLength = maxHeight
                         // Schichtnummern oben/unten
                         Text(
                             "${layers.size}",
@@ -191,6 +207,7 @@ fun GCodeViewerScreen(
                         )
 
                         // Slider um 270° gedreht → vertikal, oben = hohe Schicht
+                        // width = sliderLength damit der Slider nach Rotation die volle Screenhöhe nutzt
                         Slider(
                             value = layerIndex.toFloat(),
                             onValueChange = { layerIndex = it.toInt() },
@@ -203,13 +220,20 @@ fun GCodeViewerScreen(
                             ),
                             modifier = Modifier
                                 .graphicsLayer { rotationZ = 270f }
-                                .fillMaxHeight()
-                                .width(200.dp)
+                                .width(sliderLength)
                         )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LegendItem(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Box(modifier = Modifier.size(width = 14.dp, height = 3.dp).background(color, RoundedCornerShape(2.dp)))
+        Text(label, color = OnSurfaceDim, fontSize = 10.sp)
     }
 }
 
@@ -220,8 +244,10 @@ private fun LayerCanvas(
     bedHeight: Float,
     modifier: Modifier = Modifier
 ) {
-    val travelColor = Color(0xFF444444)
-    val extrudeColor = AccentYellow
+    val colorPrint   = Color(0xFFFFD700)  // gelb  – Druckfahrten
+    val colorInfill  = Color(0xFF4CAF50)  // grün  – Infill
+    val colorTravel  = Color(0xFFFF4081)  // pink  – Leerfahrten
+    val colorSupport = Color(0xFFFF9800)  // orange – Stützen
 
     Canvas(modifier = modifier.background(Color(0xFF0D0D0D), RoundedCornerShape(8.dp))) {
         val canvasW = size.width
@@ -245,13 +271,11 @@ private fun LayerCanvas(
         }
 
         // Bett-Umriss zeichnen
-        val bedColor = Color(0xFF1A1A2E)
         drawRect(
-            color = bedColor,
+            color = Color(0xFF1A1A2E),
             topLeft = Offset(offsetX, offsetY),
             size = Size(bedWidth * scale, bedHeight * scale)
         )
-        // Bett-Rand
         drawRect(
             color = Color(0xFF2A2A3E),
             topLeft = Offset(offsetX, offsetY),
@@ -259,16 +283,20 @@ private fun LayerCanvas(
             style = Stroke(width = 1f)
         )
 
-        // Segmente zeichnen
-        for (seg in layer.segments) {
-            val start = toScreen(seg.x1, seg.y1)
-            val end = toScreen(seg.x2, seg.y2)
-            drawLine(
-                color = if (seg.isTravel) travelColor else extrudeColor,
-                start = start,
-                end = end,
-                strokeWidth = if (seg.isTravel) 0.8f else 1.5f
-            )
+        // Segmente zeichnen – Leerfahrten zuerst (werden von Druckfahrten übermalt)
+        for (pass in listOf(MoveType.TRAVEL, MoveType.SUPPORT, MoveType.INFILL, MoveType.PRINT)) {
+            for (seg in layer.segments) {
+                if (seg.moveType != pass) continue
+                val start = toScreen(seg.x1, seg.y1)
+                val end = toScreen(seg.x2, seg.y2)
+                val (color, stroke) = when (pass) {
+                    MoveType.TRAVEL  -> colorTravel  to 0.6f
+                    MoveType.SUPPORT -> colorSupport to 1.2f
+                    MoveType.INFILL  -> colorInfill  to 1.2f
+                    MoveType.PRINT   -> colorPrint   to 1.5f
+                }
+                drawLine(color = color, start = start, end = end, strokeWidth = stroke)
+            }
         }
     }
 }

@@ -466,10 +466,19 @@ class MainViewModel @Inject constructor(
         var currentX = 0f
         var currentY = 0f
         val currentSegments = mutableListOf<GCodeSegment>()
+        var currentTypeComment = ""  // letzter ;TYPE: Kommentar
 
         for (rawLine in content.lineSequence()) {
             val line = rawLine.trim()
-            if (line.isBlank() || line.startsWith(";")) continue
+            if (line.isBlank()) continue
+
+            // ;TYPE: Kommentare auslesen (PrusaSlicer, Cura, OrcaSlicer, Bambu)
+            if (line.startsWith(";TYPE:") || line.startsWith("; TYPE:")) {
+                currentTypeComment = line.substringAfter(':').trim().lowercase()
+                continue
+            }
+            if (line.startsWith(";")) continue
+
             val cmdLine = line.substringBefore(';').trim().uppercase()
             val parts = cmdLine.split("\\s+".toRegex())
             val cmd = parts.firstOrNull() ?: continue
@@ -501,7 +510,15 @@ class MainViewModel @Inject constructor(
 
             if (currentZ >= 0f && (newX != currentX || newY != currentY)) {
                 val isTravel = cmd == "G0" || !hasE
-                currentSegments.add(GCodeSegment(currentX, currentY, newX, newY, isTravel))
+                val moveType = when {
+                    isTravel -> com.klipperremote.app.data.model.MoveType.TRAVEL
+                    currentTypeComment.contains("support") -> com.klipperremote.app.data.model.MoveType.SUPPORT
+                    currentTypeComment.contains("infill") || currentTypeComment == "fill" ||
+                        currentTypeComment == "skin" || currentTypeComment.contains("sparse") ||
+                        currentTypeComment.contains("solid infill") -> com.klipperremote.app.data.model.MoveType.INFILL
+                    else -> com.klipperremote.app.data.model.MoveType.PRINT
+                }
+                currentSegments.add(GCodeSegment(currentX, currentY, newX, newY, moveType))
             }
 
             currentX = newX; currentY = newY
@@ -587,7 +604,7 @@ class MainViewModel @Inject constructor(
             if (host.isBlank()) return@launch
             // Generischen Platzhalterwert auch überschreiben (kein echter Nutzer-Eintrag)
             val savedUrl = _uiState.value.webcamConfig.customUrl
-            val isPlaceholder = savedUrl == "/webcam/?action=stream"
+            val isPlaceholder = savedUrl == "/webcam/?action=stream" || savedUrl.isBlank()
             if (savedUrl.isNotBlank() && !isPlaceholder) return@launch
 
             queue.enqueueNormal {
@@ -600,8 +617,9 @@ class MainViewModel @Inject constructor(
                         repository.saveWebcamConfig(
                             currentConfig.copy(
                                 name = cam.name,
-                                customUrl = "http://$host:${cam.port}/?action=stream",
-                                snapshotUrl = "http://$host:${cam.port}/?action=snapshot"
+                                customUrl = "/?action=stream",
+                                snapshotUrl = "/?action=snapshot",
+                                webcamPort = cam.port
                             )
                         )
                     }
