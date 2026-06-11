@@ -830,7 +830,7 @@ fun PositionStrip(
 
 @Composable
 fun PositionLabel(axis: String, value: Float?) {
-    Row(verticalAlignment = Alignment.Baseline) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = "$axis ",
             color = OnSurfaceDim,
@@ -1108,8 +1108,7 @@ fun WebcamSettingsDialog(
                     )
                     ExposedDropdownMenu(
                         expanded = serviceExpanded,
-                        onDismissRequest = { serviceExpanded = false },
-                        containerColor = Color(0xFF2A2A2A)
+                        onDismissRequest = { serviceExpanded = false }
                     ) {
                         WebcamStreamType.entries.forEach { type ->
                             DropdownMenuItem(
@@ -1145,8 +1144,7 @@ fun WebcamSettingsDialog(
                         )
                         ExposedDropdownMenu(
                             expanded = rotateExpanded,
-                            onDismissRequest = { rotateExpanded = false },
-                            containerColor = Color(0xFF2A2A2A)
+                            onDismissRequest = { rotateExpanded = false }
                         ) {
                             listOf(0, 90, 180, 270).forEach { deg ->
                                 DropdownMenuItem(
