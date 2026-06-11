@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -98,6 +99,7 @@ fun MachineConfigScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val isEditing = uiState.editingConfigPath != null
+    var showRestartConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         if (uiState.configFiles.isEmpty()) viewModel.loadConfigFiles()
@@ -140,12 +142,54 @@ fun MachineConfigScreen(
                         IconButton(onClick = { viewModel.loadConfigFiles() }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Neu laden")
                         }
+                        IconButton(onClick = { showRestartConfirm = true }) {
+                            Icon(
+                                Icons.Default.RestartAlt,
+                                contentDescription = "Host neu starten",
+                                tint = Color(0xFFEF5350)
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF1E1E1E))
             )
         }
     ) { padding ->
+        if (showRestartConfirm) {
+            AlertDialog(
+                onDismissRequest = { showRestartConfirm = false },
+                containerColor = Color(0xFF1E1E1E),
+                icon = {
+                    Icon(Icons.Default.RestartAlt, contentDescription = null, tint = Color(0xFFEF5350))
+                },
+                title = {
+                    Text("Host neu starten?", color = Color(0xFFEEEEEE), fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Text(
+                        "Klipper und Moonraker werden neu gestartet. Laufende Drucke werden abgebrochen.",
+                        color = Color(0xFFAAAAAA)
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showRestartConfirm = false
+                            viewModel.restartHost()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
+                    ) {
+                        Text("Neu starten")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRestartConfirm = false }) {
+                        Text("Abbrechen", color = Color(0xFF888888))
+                    }
+                }
+            )
+        }
+
         if (isEditing) {
             ConfigEditor(
                 content = uiState.editingConfigContent,

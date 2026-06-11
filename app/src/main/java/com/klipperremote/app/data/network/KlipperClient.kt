@@ -184,9 +184,11 @@ class KlipperClient(private val config: KlipperConfig) {
             val files = mutableListOf<PrintFile>()
             for (i in 0 until result.length()) {
                 val obj = result.optJSONObject(i) ?: continue
+                val name = obj.optString("filename", "")
+                if (name.isBlank()) continue
                 files.add(
                     PrintFile(
-                        filename = obj.optString("filename", ""),
+                        filename = name,
                         modified = (obj.optDouble("modified", 0.0) * 1000).toLong(),
                         size = obj.optLong("size", 0L)
                     )
@@ -232,6 +234,18 @@ class KlipperClient(private val config: KlipperConfig) {
             macros.sorted()
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    // Klipper-Host neu starten (Moonraker: POST /machine/reboot)
+    suspend fun restartHost(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url("$baseUrl/machine/reboot")
+                .post("".toRequestBody(null))
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
         }
     }
 

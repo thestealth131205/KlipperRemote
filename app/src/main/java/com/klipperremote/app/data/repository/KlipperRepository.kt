@@ -228,6 +228,12 @@ class KlipperRepository @Inject constructor(
         return KlipperClient(config).saveConfigFile(path, content)
     }
 
+    suspend fun restartHost(): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).restartHost()
+    }
+
     suspend fun detectCrownestCams(): Result<List<CrownestCam>> {
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))

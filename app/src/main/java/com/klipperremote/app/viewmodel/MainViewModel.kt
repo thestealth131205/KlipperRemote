@@ -423,6 +423,20 @@ class MainViewModel @Inject constructor(
         _uiState.update { it.copy(editingConfigPath = null, editingConfigContent = "", editingConfigError = null, editingConfigSaved = false) }
     }
 
+    fun restartHost() {
+        viewModelScope.launch {
+            repository.restartHost()
+                .onSuccess {
+                    _uiState.update { it.copy(gcodeResult = "Host-Neustart ausgelöst…") }
+                    delay(3000L)
+                    _uiState.update { it.copy(gcodeResult = null) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(error = "Neustart fehlgeschlagen: ${e.message}") }
+                }
+        }
+    }
+
     fun detectCrownest() {
         viewModelScope.launch {
             _uiState.update { it.copy(crownestDetecting = true, crownestCams = emptyList()) }
