@@ -256,7 +256,7 @@ private fun LayerCanvas(
             color = Color(0xFF2A2A3E),
             topLeft = Offset(offsetX, offsetY),
             size = Size(bedWidth * scale, bedHeight * scale),
-            style = Stroke(strokeWidth = 1f)
+            style = Stroke(width = 1f)
         )
 
         // Segmente zeichnen
