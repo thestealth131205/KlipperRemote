@@ -1656,14 +1656,15 @@ fun WebcamSettingsDialog(
     var name by remember { mutableStateOf(current.name) }
     var streamUrl by remember { mutableStateOf(current.customUrl.ifBlank { "/webcam/?action=stream" }) }
     var snapshotUrl by remember { mutableStateOf(current.snapshotUrl.ifBlank { "/webcam/?action=snapshot" }) }
+    var webcamPort by remember { mutableStateOf(current.webcamPort.takeIf { it > 0 }?.toString() ?: "") }
     var showCrownestPicker by remember { mutableStateOf(false) }
 
     // Auto-Erkennung: ersten Kamera direkt in die Felder übernehmen
     LaunchedEffect(uiState.crownestAutoDetectedCam) {
         val cam = uiState.crownestAutoDetectedCam ?: return@LaunchedEffect
-        val host = uiState.config.host
-        streamUrl = "http://$host:${cam.port}/?action=stream"
-        snapshotUrl = "http://$host:${cam.port}/?action=snapshot"
+        webcamPort = cam.port.toString()
+        streamUrl = "/?action=stream"
+        snapshotUrl = "/?action=snapshot"
         name = cam.name
         viewModel.clearCrownestAutoDetected()
     }
@@ -1683,9 +1684,9 @@ fun WebcamSettingsDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    val host = uiState.config.host
-                                    streamUrl  = "http://$host:${cam.port}$streamPath"
-                                    snapshotUrl = "http://$host:${cam.port}$snapPath"
+                                    webcamPort = cam.port.toString()
+                                    streamUrl  = streamPath
+                                    snapshotUrl = snapPath
                                     name = cam.name
                                     showCrownestPicker = false
                                     viewModel.clearCrownest()
@@ -1796,9 +1797,19 @@ fun WebcamSettingsDialog(
                     colors = textFieldColors
                 )
                 OutlinedTextField(
+                    value = webcamPort,
+                    onValueChange = { webcamPort = it.filter { c -> c.isDigit() } },
+                    label = { Text("Webcam Port (z.B. 8080)") },
+                    placeholder = { Text("Leer = Moonraker-Port", color = Color(0xFF666666)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = textFieldColors
+                )
+                OutlinedTextField(
                     value = streamUrl,
                     onValueChange = { streamUrl = it },
-                    label = { Text("URL Stream") },
+                    label = { Text("Pfad Stream (z.B. /webcam/?action=stream)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     colors = textFieldColors
@@ -1806,11 +1817,35 @@ fun WebcamSettingsDialog(
                 OutlinedTextField(
                     value = snapshotUrl,
                     onValueChange = { snapshotUrl = it },
-                    label = { Text("URL Snapshot") },
+                    label = { Text("Pfad Snapshot") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     colors = textFieldColors
                 )
+                // Vorschau der resultierenden URL
+                val previewUrl = run {
+                    val host = uiState.config.host
+                    val port = webcamPort.toIntOrNull()?.takeIf { it > 0 } ?: uiState.config.port
+                    val path = streamUrl.trim()
+                    val key = uiState.config.apiKey
+                    if (host.isBlank() || path.isBlank()) return@run ""
+                    val sep = if (path.contains("?")) "&" else "?"
+                    val keyPart = if (key.isNotBlank()) "${sep}apikey=$key" else ""
+                    if (path.startsWith("/")) "http://$host:$port$path$keyPart"
+                    else if (key.isNotBlank()) "$path?apikey=$key" else path
+                }
+                if (previewUrl.isNotBlank()) {
+                    Surface(
+                        color = Color(0xFF0D1B2A),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            Text("Aktuell genutzte URL:", color = Color(0xFF888888), fontSize = 11.sp)
+                            Text(previewUrl, color = Color(0xFF4FC3F7), fontSize = 11.sp)
+                        }
+                    }
+                }
                 ExposedDropdownMenuBox(
                     expanded = serviceExpanded,
                     onExpandedChange = { serviceExpanded = it }
@@ -1918,7 +1953,8 @@ fun WebcamSettingsDialog(
                             fps = fps.toIntOrNull() ?: 15,
                             rotate = selectedRotate,
                             flipH = flipH,
-                            flipV = flipV
+                            flipV = flipV,
+                            webcamPort = webcamPort.toIntOrNull() ?: 0
                         )
                     )
                 },

@@ -48,6 +48,7 @@ class KlipperRepository @Inject constructor(
         val KEY_WEBCAM_STUN = stringPreferencesKey("webcam_stun_server")
         val KEY_WEBCAM_ICE_USER = stringPreferencesKey("webcam_ice_username")
         val KEY_WEBCAM_ICE_PASS = stringPreferencesKey("webcam_ice_password")
+        val KEY_WEBCAM_PORT = intPreferencesKey("webcam_port")
     }
 
     val configFlow: Flow<KlipperConfig> = dataStore.data.map { prefs ->
@@ -74,7 +75,8 @@ class KlipperRepository @Inject constructor(
             flipV = prefs[KEY_WEBCAM_FLIP_V] == "true",
             stunServer = prefs[KEY_WEBCAM_STUN] ?: "stun:stun.l.google.com:19302",
             iceUsername = prefs[KEY_WEBCAM_ICE_USER] ?: "",
-            icePassword = prefs[KEY_WEBCAM_ICE_PASS] ?: ""
+            icePassword = prefs[KEY_WEBCAM_ICE_PASS] ?: "",
+            webcamPort = prefs[KEY_WEBCAM_PORT] ?: 0
         )
     }
 
@@ -101,6 +103,7 @@ class KlipperRepository @Inject constructor(
             prefs[KEY_WEBCAM_STUN] = config.stunServer
             prefs[KEY_WEBCAM_ICE_USER] = config.iceUsername
             prefs[KEY_WEBCAM_ICE_PASS] = config.icePassword
+            prefs[KEY_WEBCAM_PORT] = config.webcamPort
         }
     }
 
