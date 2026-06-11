@@ -1,15 +1,28 @@
 package com.klipperremote.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -31,6 +44,7 @@ import java.net.URLDecoder
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -38,6 +52,10 @@ class MainActivity : ComponentActivity() {
                 val viewModel: MainViewModel = hiltViewModel()
                 val uiState by viewModel.uiState.collectAsState()
                 val navController = rememberNavController()
+
+                // Beim App-Start Berechtigungen prüfen und den Nutzer fragen
+                StartupPermissionGate()
+
                 Box(modifier = Modifier.fillMaxSize()) {
                 // Schwebender Fortschrittsbalken – liegt über allem außer Dialogen/Overlays
                 PrintProgressBar(
@@ -88,5 +106,59 @@ class MainActivity : ComponentActivity() {
                 } // Box
             }
         }
+    }
+}
+
+/**
+ * Prüft beim App-Start die benötigten Laufzeit-Berechtigungen und fragt den Nutzer,
+ * ob er sie zulassen möchte. Vor der System-Abfrage wird ein erklärender Dialog gezeigt,
+ * sodass der Nutzer bewusst zulassen oder ablehnen kann.
+ */
+@androidx.compose.runtime.Composable
+private fun StartupPermissionGate() {
+    val context = LocalContext.current
+
+    // POST_NOTIFICATIONS ist erst ab Android 13 (Tiramisu) eine Laufzeit-Berechtigung
+    val needsNotificationPermission =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+
+    var showRationale by remember {
+        mutableStateOf(
+            needsNotificationPermission &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Ergebnis: vom Nutzer zugelassen oder abgelehnt – beides ist in Ordnung */ }
+
+    if (showRationale) {
+        AlertDialog(
+            onDismissRequest = { showRationale = false },
+            title = { Text("Benachrichtigungen erlauben?") },
+            text = {
+                Text(
+                    "KlipperRemote möchte dir Benachrichtigungen über den Druckstatus " +
+                        "(Start, Fortschritt und Abschluss) senden. Möchtest du das zulassen?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRationale = false
+                    permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }) {
+                    Text("Zulassen")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRationale = false }) {
+                    Text("Ablehnen")
+                }
+            }
+        )
     }
 }

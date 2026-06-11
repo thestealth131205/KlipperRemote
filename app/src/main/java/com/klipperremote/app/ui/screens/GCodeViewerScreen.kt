@@ -2,6 +2,7 @@ package com.klipperremote.app.ui.screens
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -11,11 +12,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -138,25 +141,48 @@ fun GCodeViewerScreen(
             }
             else -> {
                 val currentLayer = layers[layerIndex]
+                // Zoom + Verschiebung (Pinch-to-Zoom / Pan)
+                var zoom by remember { mutableFloatStateOf(1f) }
+                var panX by remember { mutableFloatStateOf(0f) }
+                var panY by remember { mutableFloatStateOf(0f) }
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(BackgroundDark)
                         .padding(padding)
                 ) {
-                    // Canvas-Bereich
+                    // Canvas-Bereich – nimmt möglichst viel Fläche ein
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
-                            .padding(12.dp),
+                            .padding(2.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         LayerCanvas(
                             layer = currentLayer,
                             bedWidth = bedSize.first,
                             bedHeight = bedSize.second,
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clipToBounds()
+                                .pointerInput(Unit) {
+                                    detectTransformGestures { _, pan, gestureZoom, _ ->
+                                        zoom = (zoom * gestureZoom).coerceIn(1f, 8f)
+                                        if (zoom > 1f) {
+                                            panX += pan.x
+                                            panY += pan.y
+                                        } else {
+                                            panX = 0f; panY = 0f
+                                        }
+                                    }
+                                }
+                                .graphicsLayer {
+                                    scaleX = zoom
+                                    scaleY = zoom
+                                    translationX = panX
+                                    translationY = panY
+                                }
                         )
                         // Schicht-Info unten links
                         Column(
@@ -206,13 +232,13 @@ fun GCodeViewerScreen(
                             modifier = Modifier.align(Alignment.BottomCenter)
                         )
 
-                        // Slider um 270° gedreht → vertikal, oben = hohe Schicht
-                        // width = sliderLength damit der Slider nach Rotation die volle Screenhöhe nutzt
+                        // Slider um 270° gedreht → vertikal, oben = hohe Schicht.
+                        // requiredWidth(sliderLength) erzwingt die volle Bildschirmhöhe – sonst
+                        // würde .width() auf die schmale 56dp-Spaltenbreite gestaucht.
                         Slider(
                             value = layerIndex.toFloat(),
                             onValueChange = { layerIndex = it.toInt() },
-                            valueRange = 0f..(layers.size - 1).toFloat(),
-                            steps = if (layers.size > 2) layers.size - 2 else 0,
+                            valueRange = 0f..(layers.size - 1).coerceAtLeast(0).toFloat(),
                             colors = SliderDefaults.colors(
                                 thumbColor = AccentYellow,
                                 activeTrackColor = AccentYellow,
@@ -220,7 +246,7 @@ fun GCodeViewerScreen(
                             ),
                             modifier = Modifier
                                 .graphicsLayer { rotationZ = 270f }
-                                .width(sliderLength)
+                                .requiredWidth(sliderLength)
                         )
                     }
                 }

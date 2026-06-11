@@ -39,10 +39,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.klipperremote.app.data.model.CrownestCam
+import com.klipperremote.app.data.model.FanInfo
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
+import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
 import com.klipperremote.app.data.model.WebcamStreamType
 import com.klipperremote.app.ui.theme.*
@@ -62,6 +65,7 @@ fun HomeScreen(
     var showPowerDialog by remember { mutableStateOf(false) }
     var showGcodeFileBrowser by remember { mutableStateOf(false) }
     var gcodeConfirmFile by remember { mutableStateOf<String?>(null) }
+    var showTuningDialog by remember { mutableStateOf(false) }
 
     val powerDevices = uiState.powerDevices
     val isPowerOn = powerDevices.any { it.status == "on" }
@@ -75,6 +79,8 @@ fun HomeScreen(
                 onOpenWebcamConfig = { showWebcamSettings = true },
                 onNavigateToMachine = onNavigateToMachine,
                 onStartPrint = { showGcodeFileBrowser = true },
+                onPausePrint = { viewModel.pausePrint() },
+                onCancelPrint = { viewModel.cancelPrint() },
                 onNavigateToCrashLog = onNavigateToCrashLog,
                 onCoolDown = { viewModel.coolDown() }
             )
@@ -159,6 +165,20 @@ fun HomeScreen(
                                         )
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // Druckinfos (nur während aktivem Druck)
+                    val isPrinting = uiState.printerState == "printing" || uiState.printerState == "paused"
+                    uiState.printStats?.let { stats ->
+                        if (isPrinting) {
+                            item {
+                                PrintInfoPanel(
+                                    stats = stats,
+                                    currentSpeed = uiState.printSpeedMmPerSec,
+                                    zHeight = uiState.position.z
+                                )
                             }
                         }
                     }
@@ -258,6 +278,16 @@ fun HomeScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
+                        }
+                    }
+
+                    // Tuning-Leiste (nur während aktivem Druck)
+                    if (isPrinting) {
+                        item {
+                            TuningBar(
+                                tuningData = uiState.tuningData,
+                                onOpenTuning = { showTuningDialog = true }
+                            )
                         }
                     }
 
@@ -379,6 +409,18 @@ fun HomeScreen(
             devices = powerDevices,
             onToggle = { name, on -> viewModel.togglePowerDevice(name, on) },
             onDismiss = { showPowerDialog = false }
+        )
+    }
+
+    // Tuning-Dialog
+    if (showTuningDialog) {
+        TuningDialog(
+            tuningData = uiState.tuningData,
+            onSetSpeed    = { viewModel.setSpeedFactor(it) },
+            onSetFlow     = { viewModel.setExtrudeFactor(it) },
+            onSetPartFan  = { viewModel.setPartCoolingFan(it) },
+            onSetFan      = { name, pct -> viewModel.setGenericFanSpeed(name, pct) },
+            onDismiss     = { showTuningDialog = false }
         )
     }
 
@@ -1518,6 +1560,8 @@ fun BottomControlBar(
     onOpenWebcamConfig: () -> Unit,
     onNavigateToMachine: () -> Unit,
     onStartPrint: () -> Unit = {},
+    onPausePrint: () -> Unit = {},
+    onCancelPrint: () -> Unit = {},
     onNavigateToCrashLog: () -> Unit = {},
     onCoolDown: () -> Unit = {}
 ) {
@@ -1551,19 +1595,45 @@ fun BottomControlBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            val printLabel = when (printerState) {
+                "printing" -> "Druck pausieren"
+                "paused" -> "Druck abbrechen"
+                else -> "Druck starten"
+            }
+            val printIcon = when (printerState) {
+                "printing" -> Icons.Default.Pause
+                "paused" -> Icons.Default.Stop
+                else -> Icons.Default.PlayArrow
+            }
+            val printAction = when (printerState) {
+                "printing" -> onPausePrint
+                "paused" -> onCancelPrint
+                else -> onStartPrint
+            }
+            val printColor = when (printerState) {
+                "printing" -> Color(0xFFFF9800)
+                "paused" -> ErrorRed
+                else -> AccentYellow
+            }
             Button(
-                onClick = onStartPrint,
+                onClick = printAction,
                 modifier = Modifier
                     .weight(1f)
                     .height(44.dp),
                 shape = RoundedCornerShape(22.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = AccentYellow,
+                    containerColor = printColor,
                     contentColor = Color.Black
                 )
             ) {
+                Icon(
+                    printIcon,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
                 Text(
-                    "Druck starten",
+                    printLabel,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 14.sp
                 )
@@ -2044,6 +2114,244 @@ fun PrintFileRow(
 }
 
 // ── Set Temperature Dialog ─────────────────────────────────────────────────────
+
+// ── Print Info Panel ─────────────────────────────────────────────────────────
+
+@Composable
+fun PrintInfoPanel(
+    stats: PrintStats,
+    currentSpeed: Float?,
+    zHeight: Float?
+) {
+    val remainingSecs = if (stats.progress > 0.01f) {
+        (stats.printDuration / stats.progress * (1f - stats.progress)).toLong()
+    } else null
+
+    val remainingText = remainingSecs?.let {
+        val h = it / 3600L
+        val m = (it % 3600L) / 60L
+        "%02d:%02d h".format(h, m)
+    } ?: "--:-- h"
+
+    val etaText = remainingSecs?.let {
+        val etaMillis = System.currentTimeMillis() + it * 1000L
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = etaMillis }
+        "%02d:%02d".format(cal.get(java.util.Calendar.HOUR_OF_DAY), cal.get(java.util.Calendar.MINUTE))
+    } ?: "--:--"
+
+    val speedText    = currentSpeed?.let { "${it.toInt()} mm/s" } ?: "-- mm/s"
+    val maxVelText   = stats.maxVelocity?.let { "${it.toInt()} mm/s" } ?: "-- mm/s"
+    val volumeText   = stats.volumetricFlow?.let { "%.1f mm³/s".format(it) } ?: "-- mm³/s"
+    val filamentText = "%.1f mm".format(stats.filamentUsed)
+    val layerText = when {
+        stats.currentLayer != null && stats.totalLayers != null -> "${stats.currentLayer} / ${stats.totalLayers}"
+        stats.currentLayer != null -> "${stats.currentLayer}"
+        else -> "Nicht verfügbar"
+    }
+    val zText = zHeight?.let { "%.2f mm".format(it) } ?: "-- mm"
+    val filename = stats.filename.substringAfterLast('/').let {
+        if (it.length > 32) it.take(29) + "…" else it
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PrintInfoCard("Verbleibend", remainingText, Modifier.weight(1f))
+            PrintInfoCard("ETA",         etaText,       Modifier.weight(1f))
+            PrintInfoCard("Geschw.",     speedText,     Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PrintInfoCard("Max Geschw.", maxVelText,   Modifier.weight(1f))
+            PrintInfoCard("Volumen",     volumeText,   Modifier.weight(1f))
+            PrintInfoCard("Filament",    filamentText, Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PrintInfoCard("Ebene",  layerText, Modifier.weight(1f))
+            PrintInfoCard("Z Höhe", zText,     Modifier.weight(1f))
+        }
+        PrintInfoCard("Druckname", filename, Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+private fun PrintInfoCard(label: String, value: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF1C1C1C))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Column {
+            Text(label, color = OnSurfaceDim, fontSize = 11.sp)
+            Spacer(Modifier.height(3.dp))
+            Text(
+                value,
+                color = OnSurface,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+// ── Tuning Bar ────────────────────────────────────────────────────────────────
+
+@Composable
+fun TuningBar(
+    tuningData: TuningData,
+    onOpenTuning: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = Color(0xFF1C1C1C)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("Tuning", color = OnSurface, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Spacer(Modifier.weight(1f))
+            Icon(Icons.Default.Air,   contentDescription = null, tint = OnSurfaceDim, modifier = Modifier.size(15.dp))
+            Text("${tuningData.partCoolingFan} %", color = OnSurfaceDim, fontSize = 13.sp)
+            Spacer(Modifier.width(2.dp))
+            Icon(Icons.Default.Tune,  contentDescription = null, tint = OnSurfaceDim, modifier = Modifier.size(15.dp))
+            Text("${tuningData.extrudeFactor} %",  color = OnSurfaceDim, fontSize = 13.sp)
+            Spacer(Modifier.width(2.dp))
+            Icon(Icons.Default.Speed, contentDescription = null, tint = OnSurfaceDim, modifier = Modifier.size(15.dp))
+            Text("${tuningData.speedFactor} %",    color = OnSurfaceDim, fontSize = 13.sp)
+            Spacer(Modifier.width(6.dp))
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF2A2A2A))
+                    .clickable { onOpenTuning() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Settings,
+                    contentDescription = "Tuning öffnen",
+                    tint = AccentYellow,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+        }
+    }
+}
+
+// ── Tuning Dialog ─────────────────────────────────────────────────────────────
+
+@Composable
+fun TuningDialog(
+    tuningData: TuningData,
+    onSetSpeed:   (Int) -> Unit,
+    onSetFlow:    (Int) -> Unit,
+    onSetPartFan: (Int) -> Unit,
+    onSetFan:     (String, Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1E1E),
+        title = {
+            Text("Tuning", color = OnSurface, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                TuningAdjustRow("Geschwindigkeit",  tuningData.speedFactor,    "%", 5, 10,  500, onSetSpeed)
+                TuningAdjustRow("Durchflussrate",   tuningData.extrudeFactor,  "%", 5, 10,  200, onSetFlow)
+                TuningAdjustRow("Lüfter (Kühlung)", tuningData.partCoolingFan, "%", 5,  0,  100, onSetPartFan)
+                tuningData.fans.forEach { fan ->
+                    TuningAdjustRow(fan.displayName, fan.speedPercent, "%", 5, 0, 100) { pct ->
+                        onSetFan(fan.keyName, pct)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Schließen", color = AccentYellow)
+            }
+        }
+    )
+}
+
+@Composable
+private fun TuningAdjustRow(
+    label: String,
+    value: Int,
+    unit: String,
+    step: Int,
+    min: Int,
+    max: Int,
+    onSet: (Int) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFF2A2A2A),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(label, color = AccentYellow, fontSize = 11.sp)
+                Text(
+                    "$value $unit",
+                    color = OnSurface,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 24.sp
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val canDec = value > min
+                val canInc = value < max
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (canDec) Color(0xFF3A3A3A) else Color(0xFF252525))
+                        .clickable(enabled = canDec) { onSet((value - step).coerceAtLeast(min)) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "−5",
+                        color = if (canDec) OnSurface else OnSurfaceDim.copy(alpha = 0.3f),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (canInc) Color(0xFF3A3A3A) else Color(0xFF252525))
+                        .clickable(enabled = canInc) { onSet((value + step).coerceAtMost(max)) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "+5",
+                        color = if (canInc) OnSurface else OnSurfaceDim.copy(alpha = 0.3f),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

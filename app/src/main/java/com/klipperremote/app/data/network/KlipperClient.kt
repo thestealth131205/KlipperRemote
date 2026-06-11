@@ -2,6 +2,7 @@ package com.klipperremote.app.data.network
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.klipperremote.app.data.model.FanInfo
 import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.ConfigFile
 import com.klipperremote.app.data.model.CrownestCam
@@ -9,8 +10,10 @@ import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
+import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.TuningData
 import okhttp3.MultipartBody
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
@@ -411,6 +414,18 @@ class KlipperClient(private val config: KlipperConfig) {
         }
     }
 
+    // Druck abbrechen
+    suspend fun cancelPrint(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url("$baseUrl/printer/print/cancel")
+                .post("".toRequestBody("application/json".toMediaType()))
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        }
+    }
+
     // Aktuelle Druckgeschwindigkeit aus gcode_move.speed (mm/min → mm/s)
     suspend fun getPrintSpeed(): Float? = withContext(Dispatchers.IO) {
         try {
@@ -537,6 +552,113 @@ class KlipperClient(private val config: KlipperConfig) {
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    // Druckstatistiken abfragen (nur während aktivem Druck/Pause)
+    suspend fun getPrintStats(): PrintStats? = withContext(Dispatchers.IO) {
+        try {
+            val url = "$baseUrl/printer/objects/query?print_stats=&gcode_move=speed_factor,extrude_factor&toolhead=max_velocity&motion_report=live_extruder_velocity&virtual_sdcard=progress"
+            val req = Request.Builder().url(url).get().build()
+            val body = client.newCall(req).execute().body?.string() ?: return@withContext null
+            val status = JSONObject(body)
+                .optJSONObject("result")?.optJSONObject("status") ?: return@withContext null
+
+            val ps = status.optJSONObject("print_stats") ?: return@withContext null
+            val state = ps.optString("state", "")
+            if (state != "printing" && state != "paused") return@withContext null
+
+            val gcodeMove = status.optJSONObject("gcode_move")
+            val toolhead  = status.optJSONObject("toolhead")
+            val motionRep = status.optJSONObject("motion_report")
+            val vSdcard   = status.optJSONObject("virtual_sdcard")
+
+            val info = ps.optJSONObject("info")
+            val currentLayer = info?.optInt("current_layer", -1)?.takeIf { it > 0 }
+            val totalLayers  = info?.optInt("total_layer",   -1)?.takeIf { it > 0 }
+
+            val liveExtVel = motionRep?.optDouble("live_extruder_velocity", 0.0)?.toFloat() ?: 0f
+            val volumetricFlow = if (liveExtVel > 0.001f) {
+                val r = 1.75f / 2f
+                liveExtVel * Math.PI.toFloat() * r * r
+            } else null
+
+            PrintStats(
+                filename      = ps.optString("filename", ""),
+                printDuration = ps.optDouble("print_duration", 0.0).toFloat(),
+                progress      = vSdcard?.optDouble("progress", 0.0)?.toFloat() ?: 0f,
+                filamentUsed  = ps.optDouble("filament_used", 0.0).toFloat(),
+                currentLayer  = currentLayer,
+                totalLayers   = totalLayers,
+                maxVelocity   = toolhead?.optDouble("max_velocity", 0.0)?.toFloat()?.takeIf { it > 0 },
+                volumetricFlow = volumetricFlow,
+                speedFactor   = gcodeMove?.optDouble("speed_factor", 1.0)?.toFloat() ?: 1f,
+                extrudeFactor = gcodeMove?.optDouble("extrude_factor", 1.0)?.toFloat() ?: 1f
+            )
+        } catch (e: Exception) { null }
+    }
+
+    // Tuning-Daten abfragen (Geschwindigkeit-, Fluss- und Lüfterwerte)
+    suspend fun getTuningData(): TuningData = withContext(Dispatchers.IO) {
+        try {
+            // fan_generic Objekte entdecken
+            val listBody = client.newCall(Request.Builder().url("$baseUrl/printer/objects/list").get().build())
+                .execute().body?.string() ?: return@withContext TuningData()
+            val objects = JSONObject(listBody).optJSONObject("result")?.optJSONArray("objects")
+            val fanGenerics = mutableListOf<String>()
+            if (objects != null) {
+                for (i in 0 until objects.length()) {
+                    val obj = objects.getString(i)
+                    if (obj.startsWith("fan_generic ")) fanGenerics.add(obj)
+                }
+            }
+
+            // Kombinierte Abfrage
+            val sb = StringBuilder("$baseUrl/printer/objects/query?gcode_move=speed_factor,extrude_factor&fan=speed")
+            fanGenerics.forEach {
+                sb.append("&").append(URLEncoder.encode(it, "UTF-8").replace("+", "%20")).append("=speed")
+            }
+
+            val statusJson = client.newCall(Request.Builder().url(sb.toString()).get().build())
+                .execute().body?.string() ?: return@withContext TuningData()
+            val status = JSONObject(statusJson).optJSONObject("result")?.optJSONObject("status")
+                ?: return@withContext TuningData()
+
+            val gm = status.optJSONObject("gcode_move")
+            val speedFactor   = ((gm?.optDouble("speed_factor",   1.0) ?: 1.0) * 100).toInt()
+            val extrudeFactor = ((gm?.optDouble("extrude_factor", 1.0) ?: 1.0) * 100).toInt()
+            val partFan       = ((status.optJSONObject("fan")?.optDouble("speed", 0.0) ?: 0.0) * 100).toInt()
+
+            val fans = fanGenerics.mapNotNull { key ->
+                val speed = status.optJSONObject(key)?.optDouble("speed", 0.0) ?: return@mapNotNull null
+                val keyName = key.removePrefix("fan_generic ")
+                val displayName = keyName.split("_").joinToString(" ") { it.replaceFirstChar { c -> c.uppercaseChar() } }
+                FanInfo(keyName = keyName, displayName = displayName, speedPercent = (speed * 100).toInt())
+            }
+
+            TuningData(speedFactor = speedFactor, extrudeFactor = extrudeFactor, partCoolingFan = partFan, fans = fans)
+        } catch (e: Exception) { TuningData() }
+    }
+
+    // Druckgeschwindigkeit setzen: M220 S<percent>
+    suspend fun setSpeedFactor(percent: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching { sendGcodeInternal("M220 S$percent") }
+    }
+
+    // Extrusionsrate setzen: M221 S<percent>
+    suspend fun setExtrudeFactor(percent: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching { sendGcodeInternal("M221 S$percent") }
+    }
+
+    // Part-Cooling-Lüfter setzen: M106 S<0-255>
+    suspend fun setPartCoolingFan(percent: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        val s = (percent / 100.0 * 255).toInt().coerceIn(0, 255)
+        runCatching { sendGcodeInternal("M106 S$s") }
+    }
+
+    // fan_generic Lüfter setzen: SET_FAN_SPEED FAN=<name> SPEED=<0.0-1.0>
+    suspend fun setGenericFanSpeed(fanKeyName: String, percent: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        val speed = "%.2f".format(percent / 100.0)
+        runCatching { sendGcodeInternal("SET_FAN_SPEED FAN=$fanKeyName SPEED=$speed") }
     }
 
     // Aktuelle Druckkopf-Position abfragen

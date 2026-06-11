@@ -149,3 +149,29 @@ data class CrownestCam(
     val port: Int,
     val mode: String  // "ustreamer" | "camera-streamer"
 )
+
+data class PrintStats(
+    val filename: String = "",
+    val printDuration: Float = 0f,       // Sekunden aktiver Druckzeit
+    val progress: Float = 0f,            // 0.0–1.0
+    val filamentUsed: Float = 0f,        // mm
+    val currentLayer: Int? = null,
+    val totalLayers: Int? = null,
+    val maxVelocity: Float? = null,      // mm/s aus toolhead.max_velocity
+    val volumetricFlow: Float? = null,   // mm³/s (null = nicht verfügbar)
+    val speedFactor: Float = 1f,         // Geschwindigkeitsfaktor (1.0 = 100 %)
+    val extrudeFactor: Float = 1f        // Extrusionsfaktor (1.0 = 100 %)
+)
+
+data class FanInfo(
+    val keyName: String,       // Klipper-interner Name, z. B. "heater_fan"
+    val displayName: String,   // Anzeigename, z. B. "Heater Fan"
+    val speedPercent: Int      // 0–100
+)
+
+data class TuningData(
+    val speedFactor: Int = 100,
+    val extrudeFactor: Int = 100,
+    val partCoolingFan: Int = 0,
+    val fans: List<FanInfo> = emptyList()
+)

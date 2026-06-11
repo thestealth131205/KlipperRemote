@@ -13,8 +13,10 @@ import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
+import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
 import com.klipperremote.app.data.model.WebcamStreamType
 import com.klipperremote.app.data.network.KlipperClient
@@ -269,10 +271,52 @@ class KlipperRepository @Inject constructor(
         return KlipperClient(config).resumePrint()
     }
 
+    suspend fun cancelPrint(): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).cancelPrint()
+    }
+
     suspend fun getPrintSpeed(): Result<Float?> {
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.success(null)
         return runCatching { KlipperClient(config).getPrintSpeed() }
+    }
+
+    suspend fun getPrintStats(): Result<PrintStats?> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.success(null)
+        return runCatching { KlipperClient(config).getPrintStats() }
+    }
+
+    suspend fun getTuningData(): Result<TuningData> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.success(TuningData())
+        return runCatching { KlipperClient(config).getTuningData() }
+    }
+
+    suspend fun setSpeedFactor(percent: Int): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).setSpeedFactor(percent)
+    }
+
+    suspend fun setExtrudeFactor(percent: Int): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).setExtrudeFactor(percent)
+    }
+
+    suspend fun setPartCoolingFan(percent: Int): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).setPartCoolingFan(percent)
+    }
+
+    suspend fun setGenericFanSpeed(fanKeyName: String, percent: Int): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).setGenericFanSpeed(fanKeyName, percent)
     }
 
     suspend fun downloadSnapshot(snapshotUrl: String): Result<ByteArray> {

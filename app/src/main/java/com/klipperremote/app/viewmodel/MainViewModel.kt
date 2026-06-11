@@ -12,13 +12,17 @@ import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
+import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.klipperremote.app.data.network.ApiRequestQueue
 import com.klipperremote.app.data.repository.KlipperRepository
+import com.klipperremote.app.PrintNotificationHelper
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,16 +71,24 @@ data class MainUiState(
     // Crownest-Kameraerkennung
     val crownestCams: List<CrownestCam> = emptyList(),
     val crownestDetecting: Boolean = false,
-    val crownestAutoDetectedCam: CrownestCam? = null
+    val crownestAutoDetectedCam: CrownestCam? = null,
+    // Druckstatistiken (null = kein aktiver Druck)
+    val printStats: PrintStats? = null,
+    // Tuning-Daten
+    val tuningData: TuningData = TuningData()
 )
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
-    private val repository: KlipperRepository
+    private val repository: KlipperRepository,
+    @ApplicationContext private val appContext: android.content.Context
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    /** Letzter bekannter Druckzustand – um den Start eines Drucks zu erkennen. */
+    private var lastPrintingActive = false
 
     /** Serialisierte Warteschlange für alle API-Anfragen. */
     private val queue = ApiRequestQueue(viewModelScope)
@@ -126,12 +138,19 @@ class MainViewModel @Inject constructor(
         // Hintergrunddaten: alle 4 Sekunden, NORMAL-Priorität (sequenziell via Queue)
         viewModelScope.launch {
             queue.enqueueNormal { fetchPowerDevicesInternal() }
+            var bgCounter = 0
             while (true) {
                 delay(4000L)
+                bgCounter++
                 queue.enqueueNormal { fetchPrinterStatusInternal() }
                 queue.enqueueNormal { fetchPositionInternal() }
                 queue.enqueueNormal { fetchPrintProgressInternal() }
                 queue.enqueueNormal { fetchPrintSpeedInternal() }
+                queue.enqueueNormal { fetchPrintStatsInternal() }
+                queue.enqueueNormal { syncPrintNotification() }
+                if (bgCounter % 2 == 0) {
+                    queue.enqueueNormal { fetchTuningDataInternal() }
+                }
             }
         }
         // Power-Geräte seltener aktualisieren
@@ -176,6 +195,82 @@ class MainViewModel @Inject constructor(
             .onSuccess { speed ->
                 _uiState.update { it.copy(printSpeedMmPerSec = speed) }
             }
+    }
+
+    private suspend fun fetchPrintStatsInternal() {
+        repository.getPrintStats()
+            .onSuccess { stats ->
+                _uiState.update { it.copy(printStats = stats) }
+            }
+    }
+
+    /**
+     * Erkennt anhand des Druckerzustands, ob ein Druck läuft, und zeigt bzw. entfernt
+     * die fortlaufende Druck-Benachrichtigung. Wird bei Druckstart erstmals ausgelöst.
+     */
+    private fun syncPrintNotification() {
+        val state = _uiState.value
+        val printing = state.printerState.equals("printing", ignoreCase = true)
+        if (printing) {
+            val stats = state.printStats
+            val progress = stats?.progress ?: state.printProgress ?: 0f
+            val filename = stats?.filename ?: ""
+            val etaText = stats?.let { s ->
+                if (s.progress > 0.01f) {
+                    val remainingSecs = (s.printDuration / s.progress * (1f - s.progress)).toLong()
+                    val etaMillis = System.currentTimeMillis() + remainingSecs * 1000L
+                    val cal = java.util.Calendar.getInstance().apply { timeInMillis = etaMillis }
+                    "%02d:%02d".format(
+                        cal.get(java.util.Calendar.HOUR_OF_DAY),
+                        cal.get(java.util.Calendar.MINUTE)
+                    )
+                } else null
+            }
+            PrintNotificationHelper.showPrintProgress(appContext, filename, progress, etaText)
+            lastPrintingActive = true
+        } else if (lastPrintingActive) {
+            PrintNotificationHelper.clearPrintProgress(appContext)
+            lastPrintingActive = false
+        }
+    }
+
+    private suspend fun fetchTuningDataInternal() {
+        repository.getTuningData()
+            .onSuccess { data ->
+                _uiState.update { it.copy(tuningData = data) }
+            }
+    }
+
+    fun setSpeedFactor(percent: Int) {
+        queue.enqueueHigh {
+            repository.setSpeedFactor(percent.coerceIn(10, 500))
+                .onFailure { e -> _uiState.update { it.copy(error = "Geschwindigkeit: ${e.message}") } }
+            fetchTuningDataInternal()
+        }
+    }
+
+    fun setExtrudeFactor(percent: Int) {
+        queue.enqueueHigh {
+            repository.setExtrudeFactor(percent.coerceIn(10, 200))
+                .onFailure { e -> _uiState.update { it.copy(error = "Flussrate: ${e.message}") } }
+            fetchTuningDataInternal()
+        }
+    }
+
+    fun setPartCoolingFan(percent: Int) {
+        queue.enqueueHigh {
+            repository.setPartCoolingFan(percent.coerceIn(0, 100))
+                .onFailure { e -> _uiState.update { it.copy(error = "Lüfter: ${e.message}") } }
+            fetchTuningDataInternal()
+        }
+    }
+
+    fun setGenericFanSpeed(fanKeyName: String, percent: Int) {
+        queue.enqueueHigh {
+            repository.setGenericFanSpeed(fanKeyName, percent.coerceIn(0, 100))
+                .onFailure { e -> _uiState.update { it.copy(error = "Lüfter: ${e.message}") } }
+            fetchTuningDataInternal()
+        }
     }
 
     private suspend fun fetchPositionInternal() {
@@ -274,6 +369,14 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             repository.resumePrint().onFailure { e ->
                 _uiState.update { it.copy(error = "Fortsetzen fehlgeschlagen: ${e.message}") }
+            }
+        }
+    }
+
+    fun cancelPrint() {
+        viewModelScope.launch {
+            repository.cancelPrint().onFailure { e ->
+                _uiState.update { it.copy(error = "Abbrechen fehlgeschlagen: ${e.message}") }
             }
         }
     }
@@ -462,22 +565,42 @@ class MainViewModel @Inject constructor(
 
     private fun parseGCode(content: String): List<GCodeLayer> {
         val layers = mutableListOf<GCodeLayer>()
-        var currentZ = -1f
         var currentX = 0f
         var currentY = 0f
+        var currentZ = 0f
+        // Z-Höhe der aktuellen Schicht – nur fürs Label (Slider-Anzeige).
+        // Schichtwechsel werden AUSSCHLIESSLICH über Slicer-Marker (;LAYER_CHANGE etc.)
+        // ausgelöst, NICHT über Z-Änderungen (Z-Hops würden sonst falsch zählen).
+        var layerZ = Float.NaN
         val currentSegments = mutableListOf<GCodeSegment>()
-        var currentTypeComment = ""  // letzter ;TYPE: Kommentar
+        var currentTypeComment = ""   // letzter ;TYPE: Kommentar
+
+        fun flushLayer() {
+            if (currentSegments.isNotEmpty()) {
+                layers.add(GCodeLayer(if (layerZ.isNaN()) currentZ else layerZ, currentSegments.toList()))
+            }
+            currentSegments.clear()
+            layerZ = Float.NaN
+        }
 
         for (rawLine in content.lineSequence()) {
             val line = rawLine.trim()
             if (line.isBlank()) continue
 
-            // ;TYPE: Kommentare auslesen (PrusaSlicer, Cura, OrcaSlicer, Bambu)
-            if (line.startsWith(";TYPE:") || line.startsWith("; TYPE:")) {
-                currentTypeComment = line.substringAfter(':').trim().lowercase()
+            // Kommentare: ;TYPE: und explizite Layer-Wechsel-Marker auswerten
+            if (line.startsWith(";")) {
+                val c = line.drop(1).trim().lowercase()
+                when {
+                    c.startsWith("type:") -> currentTypeComment = c.substringAfter(':').trim()
+                    // PrusaSlicer/OrcaSlicer: ;LAYER_CHANGE  ·  Cura: ;LAYER:n
+                    // Bambu/Generisch: ;CHANGE_LAYER / ; layer num
+                    // Schichtwechsel NUR hier: vor jeder Schicht steht ein solcher Marker.
+                    c.startsWith("layer_change") || c.startsWith("change_layer") ||
+                        c == "before_layer_change" || c.startsWith("layer:") ||
+                        c.startsWith("layer ") -> flushLayer()
+                }
                 continue
             }
-            if (line.startsWith(";")) continue
 
             val cmdLine = line.substringBefore(';').trim().uppercase()
             val parts = cmdLine.split("\\s+".toRegex())
@@ -499,16 +622,18 @@ class MainViewModel @Inject constructor(
                 }
             }
 
-            // Neue Schicht bei Z-Änderung
-            if (newZ != currentZ && newZ >= 0f) {
-                if (currentSegments.isNotEmpty() && currentZ >= 0f) {
-                    layers.add(GCodeLayer(currentZ, currentSegments.toList()))
-                    currentSegments.clear()
-                }
-                currentZ = newZ
+            val moved = newX != currentX || newY != currentY
+            val isExtrude = cmd == "G1" && hasE && moved
+
+            // layerZ dient nur als Höhen-Label der Schicht – auf erste Extrusion gesetzt.
+            // Schichtwechsel passieren ausschließlich über die Marker oben (flushLayer()).
+            if (isExtrude && layerZ.isNaN()) {
+                layerZ = newZ
             }
 
-            if (currentZ >= 0f && (newX != currentX || newY != currentY)) {
+            // Segmente erst ab der ersten Extrusion der Schicht sammeln – so landen
+            // Start-G-Code-/Purge-Fahrten nicht als Phantom-Schicht.
+            if (!layerZ.isNaN() && moved) {
                 val isTravel = cmd == "G0" || !hasE
                 val moveType = when {
                     isTravel -> com.klipperremote.app.data.model.MoveType.TRAVEL
@@ -521,12 +646,10 @@ class MainViewModel @Inject constructor(
                 currentSegments.add(GCodeSegment(currentX, currentY, newX, newY, moveType))
             }
 
-            currentX = newX; currentY = newY
+            currentX = newX; currentY = newY; currentZ = newZ
         }
 
-        if (currentSegments.isNotEmpty() && currentZ >= 0f) {
-            layers.add(GCodeLayer(currentZ, currentSegments.toList()))
-        }
+        flushLayer()
         return layers
     }
 
