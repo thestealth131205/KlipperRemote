@@ -40,6 +40,7 @@ data class MainUiState(
     val pinnedGcodes: List<String> = listOf("G28", "SAVE_CONFIG", "PROBE_CALIBRATE"),
     val gcodeResult: String? = null,
     val powerDevices: List<PowerDevice> = emptyList(),
+    val connectionFailed: Boolean = false,
     // G-Code Viewer
     val gcodeViewerLayers: List<GCodeLayer> = emptyList(),
     val gcodeViewerLoading: Boolean = false,
@@ -84,6 +85,13 @@ class MainViewModel @Inject constructor(
                 _uiState.update { it.copy(webcamConfig = webcamConfig) }
             }
         }
+        // Gecachte Power-Geräte sofort aus DataStore laden (ohne Netzwerk)
+        viewModelScope.launch {
+            val cached = repository.loadCachedPowerDevices()
+            if (cached.isNotEmpty()) {
+                _uiState.update { it.copy(powerDevices = cached) }
+            }
+        }
         startPolling()
         loadFiles()
         loadMacros()
@@ -113,10 +121,11 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             repository.getTemperatures()
                 .onSuccess { temps ->
-                    _uiState.update { it.copy(temperatures = temps, isLoading = false) }
+                    _uiState.update { it.copy(temperatures = temps, isLoading = false, connectionFailed = false) }
                 }
-                // Polling-Fehler (timeout, offline) werden still ignoriert –
-                // die "Offline"-Anzeige in der Bottom-Bar signalisiert den Status bereits.
+                .onFailure {
+                    _uiState.update { it.copy(connectionFailed = true) }
+                }
         }
     }
 
@@ -263,7 +272,11 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             repository.getPowerDevices()
                 .onSuccess { devices ->
-                    _uiState.update { it.copy(powerDevices = devices) }
+                    _uiState.update { it.copy(powerDevices = devices, connectionFailed = false) }
+                    if (devices.isNotEmpty()) repository.saveCachedPowerDevices(devices)
+                }
+                .onFailure {
+                    _uiState.update { it.copy(connectionFailed = true) }
                 }
         }
     }

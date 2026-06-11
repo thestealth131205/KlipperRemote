@@ -181,7 +181,39 @@ fun HomeScreen(
 
                     // Temperature grid
                     item {
-                        if (uiState.isLoading && uiState.temperatures.isEmpty()) {
+                        if (uiState.connectionFailed && uiState.temperatures.isEmpty()) {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFF1C1C1C)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.WifiOff,
+                                        contentDescription = null,
+                                        tint = OnSurfaceDim,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Column {
+                                        Text(
+                                            "Keine Verbindung",
+                                            color = OnSurface,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Text(
+                                            "Drucker nicht erreichbar – Einstellungen prüfen",
+                                            color = OnSurfaceDim,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (uiState.isLoading && uiState.temperatures.isEmpty()) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()

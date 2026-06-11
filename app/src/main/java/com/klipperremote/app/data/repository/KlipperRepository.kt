@@ -34,6 +34,7 @@ class KlipperRepository @Inject constructor(
         val KEY_USERNAME = stringPreferencesKey("klipper_username")
         val KEY_PASSWORD = stringPreferencesKey("klipper_password")
         val KEY_API_KEY = stringPreferencesKey("klipper_api_key")
+        val KEY_CACHED_POWER_DEVICES = stringPreferencesKey("cached_power_devices")
 
         val KEY_WEBCAM_NAME = stringPreferencesKey("webcam_name")
         val KEY_WEBCAM_URL = stringPreferencesKey("webcam_custom_url")
@@ -238,5 +239,21 @@ class KlipperRepository @Inject constructor(
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
         return runCatching { KlipperClient(config).detectCrownestCams() }
+    }
+
+    // Power-Gerät-Cache: Format "name:status|name:status"
+    suspend fun saveCachedPowerDevices(devices: List<PowerDevice>) {
+        val encoded = devices.joinToString("|") { "${it.name}:${it.status}" }
+        dataStore.edit { prefs -> prefs[KEY_CACHED_POWER_DEVICES] = encoded }
+    }
+
+    suspend fun loadCachedPowerDevices(): List<PowerDevice> {
+        val encoded = dataStore.data.first()[KEY_CACHED_POWER_DEVICES] ?: return emptyList()
+        if (encoded.isBlank()) return emptyList()
+        return encoded.split("|").mapNotNull { part ->
+            val idx = part.lastIndexOf(':')
+            if (idx <= 0) return@mapNotNull null
+            PowerDevice(name = part.substring(0, idx), status = part.substring(idx + 1))
+        }
     }
 }
