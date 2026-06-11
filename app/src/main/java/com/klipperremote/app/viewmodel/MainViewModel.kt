@@ -208,6 +208,16 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun moveToXyz(x: Float?, y: Float?, z: Float?, feedrate: Int) {
+        val parts = mutableListOf<String>()
+        x?.let { parts.add("X%.3f".format(it)) }
+        y?.let { parts.add("Y%.3f".format(it)) }
+        z?.let { parts.add("Z%.3f".format(it)) }
+        if (parts.isEmpty()) return
+        parts.add("F$feedrate")
+        sendGcode("G0 ${parts.joinToString(" ")}")
+    }
+
     fun loadFiles() {
         viewModelScope.launch {
             repository.getFiles()

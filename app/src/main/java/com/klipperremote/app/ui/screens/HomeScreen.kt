@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -242,7 +243,11 @@ fun HomeScreen(
                         BewegungsSection(
                             position = uiState.position,
                             onJog = { axis, dist -> viewModel.jogMove(axis, dist) },
-                            onHome = { axes -> viewModel.homeAxes(axes) }
+                            onHome = { axes -> viewModel.homeAxes(axes) },
+                            pinnedGcodes = uiState.pinnedGcodes,
+                            macros = uiState.macros,
+                            onSendGcode = { viewModel.sendGcode(it) },
+                            onMoveToXyz = { x, y, z, feed -> viewModel.moveToXyz(x, y, z, feed) }
                         )
                     }
 
@@ -648,10 +653,19 @@ fun WebcamCard(host: String, port: Int = 7125, webcamConfig: WebcamConfig, apiKe
 fun BewegungsSection(
     position: KlipperPosition,
     onJog: (axis: String, dist: Float) -> Unit,
-    onHome: (axes: String) -> Unit
+    onHome: (axes: String) -> Unit,
+    pinnedGcodes: List<String> = emptyList(),
+    macros: List<String> = emptyList(),
+    onSendGcode: (String) -> Unit = {},
+    onMoveToXyz: (x: Float?, y: Float?, z: Float?, feedrate: Int) -> Unit = { _, _, _, _ -> }
 ) {
     var stepMm by remember { mutableStateOf(10f) }
     val stepOptions = listOf(0.1f, 1f, 10f, 50f)
+
+    // Alle Schnellbefehle: pinnedGcodes zuerst, dann Makros (ohne Duplikate)
+    val allCommands = remember(pinnedGcodes, macros) {
+        (pinnedGcodes + macros).distinct()
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
@@ -691,8 +705,39 @@ fun BewegungsSection(
         // Position strip
         PositionStrip(
             position = position,
-            onHomeAll = { onHome("") }
+            onHomeAll = { onHome("") },
+            onMoveToXyz = onMoveToXyz
         )
+        // Schnellbefehle (pinnedGcodes + Makros aus Klipper-Config)
+        if (allCommands.isNotEmpty()) {
+            QuickGcodeRow(commands = allCommands, onSend = onSendGcode)
+        }
+    }
+}
+
+@Composable
+fun QuickGcodeRow(commands: List<String>, onSend: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        commands.forEach { cmd ->
+            Surface(
+                shape = RoundedCornerShape(50.dp),
+                color = Color(0xFF1C1C1C),
+                modifier = Modifier.clickable { onSend(cmd) }
+            ) {
+                Text(
+                    text = cmd,
+                    color = AccentYellow,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                )
+            }
+        }
     }
 }
 
@@ -869,8 +914,11 @@ fun JogArrowButton(
 @Composable
 fun PositionStrip(
     position: KlipperPosition,
-    onHomeAll: () -> Unit
+    onHomeAll: () -> Unit,
+    onMoveToXyz: (x: Float?, y: Float?, z: Float?, feedrate: Int) -> Unit
 ) {
+    var showMoveDialog by remember { mutableStateOf(false) }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(50.dp),
@@ -886,6 +934,24 @@ fun PositionStrip(
             Spacer(Modifier.width(16.dp))
             PositionLabel("Z", position.z)
             Spacer(Modifier.weight(1f))
+            // Zu XYZ fahren Button
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF2A2A2A))
+                    .clickable { showMoveDialog = true },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Navigation,
+                    contentDescription = "Zu Koordinaten fahren",
+                    tint = AccentYellow,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            // Home-Button
             Box(
                 modifier = Modifier
                     .size(28.dp)
@@ -903,6 +969,95 @@ fun PositionStrip(
             }
         }
     }
+
+    if (showMoveDialog) {
+        MoveToXyzDialog(
+            currentPosition = position,
+            onDismiss = { showMoveDialog = false },
+            onConfirm = { x, y, z, feed ->
+                onMoveToXyz(x, y, z, feed)
+                showMoveDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+fun MoveToXyzDialog(
+    currentPosition: KlipperPosition,
+    onDismiss: () -> Unit,
+    onConfirm: (x: Float?, y: Float?, z: Float?, feedrate: Int) -> Unit
+) {
+    var xInput by remember { mutableStateOf(currentPosition.x?.let { "%.1f".format(it) } ?: "") }
+    var yInput by remember { mutableStateOf(currentPosition.y?.let { "%.1f".format(it) } ?: "") }
+    var zInput by remember { mutableStateOf(currentPosition.z?.let { "%.1f".format(it) } ?: "") }
+    var feedInput by remember { mutableStateOf("3000") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1E1E),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.Navigation,
+                    contentDescription = null,
+                    tint = AccentYellow,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    "Zu Koordinaten fahren",
+                    color = OnSurface,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                listOf(
+                    Triple("X (mm)", xInput, { v: String -> xInput = v }),
+                    Triple("Y (mm)", yInput, { v: String -> yInput = v }),
+                    Triple("Z (mm)", zInput, { v: String -> zInput = v }),
+                    Triple("Vorschub (mm/min)", feedInput, { v: String -> feedInput = v })
+                ).forEach { (label, value, onValue) ->
+                    OutlinedTextField(
+                        value = value,
+                        onValueChange = onValue,
+                        label = { Text(label, color = OnSurfaceDim, fontSize = 12.sp) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = OnSurface,
+                            unfocusedTextColor = OnSurface,
+                            focusedBorderColor = AccentYellow,
+                            unfocusedBorderColor = Color(0xFF444444)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onConfirm(
+                    xInput.toFloatOrNull(),
+                    yInput.toFloatOrNull(),
+                    zInput.toFloatOrNull(),
+                    feedInput.toIntOrNull() ?: 3000
+                )
+            }) {
+                Text("Fahren", color = AccentYellow, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Abbrechen", color = OnSurfaceDim)
+            }
+        }
+    )
 }
 
 @Composable
