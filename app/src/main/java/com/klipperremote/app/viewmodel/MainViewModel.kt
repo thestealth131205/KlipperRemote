@@ -61,7 +61,8 @@ data class MainUiState(
     val editingConfigError: String? = null,
     // Crownest-Kameraerkennung
     val crownestCams: List<CrownestCam> = emptyList(),
-    val crownestDetecting: Boolean = false
+    val crownestDetecting: Boolean = false,
+    val crownestAutoDetectedCam: CrownestCam? = null
 )
 
 @HiltViewModel
@@ -86,6 +87,7 @@ class MainViewModel @Inject constructor(
         startPolling()
         loadFiles()
         loadMacros()
+        autoDetectWebcamIfNeeded()
     }
 
     private fun startPolling() {
@@ -437,6 +439,30 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    private fun autoDetectWebcamIfNeeded() {
+        viewModelScope.launch {
+            // DataStore braucht kurz zum Laden
+            delay(1000L)
+            val host = _uiState.value.config.host
+            if (host.isBlank()) return@launch
+            if (_uiState.value.webcamConfig.customUrl.isNotBlank()) return@launch
+
+            repository.detectCrownestCams()
+                .onSuccess { cams ->
+                    val cam = cams.firstOrNull() ?: return@onSuccess
+                    val currentConfig = _uiState.value.webcamConfig
+                    if (currentConfig.customUrl.isNotBlank()) return@onSuccess
+                    repository.saveWebcamConfig(
+                        currentConfig.copy(
+                            name = cam.name,
+                            customUrl = "http://$host:${cam.port}/?action=stream",
+                            snapshotUrl = "http://$host:${cam.port}/?action=snapshot"
+                        )
+                    )
+                }
+        }
+    }
+
     fun detectCrownest() {
         viewModelScope.launch {
             _uiState.update { it.copy(crownestDetecting = true, crownestCams = emptyList()) }
@@ -452,6 +478,23 @@ class MainViewModel @Inject constructor(
 
     fun clearCrownest() {
         _uiState.update { it.copy(crownestCams = emptyList()) }
+    }
+
+    fun autoDetectFirstCam() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(crownestDetecting = true, crownestAutoDetectedCam = null) }
+            repository.detectCrownestCams()
+                .onSuccess { cams ->
+                    _uiState.update { it.copy(crownestDetecting = false, crownestAutoDetectedCam = cams.firstOrNull()) }
+                }
+                .onFailure {
+                    _uiState.update { it.copy(crownestDetecting = false) }
+                }
+        }
+    }
+
+    fun clearCrownestAutoDetected() {
+        _uiState.update { it.copy(crownestAutoDetectedCam = null) }
     }
 
     // ── G-Code Viewer ────────────────────────────────────────────────────────────

@@ -226,6 +226,7 @@ fun HomeScreen(
                     item {
                         WebcamCard(
                             host = uiState.config.host,
+                            port = uiState.config.port,
                             webcamConfig = uiState.webcamConfig
                         )
                     }
@@ -559,7 +560,7 @@ fun TempCard(
 // ── Webcam Card ────────────────────────────────────────────────────────────────
 
 @Composable
-fun WebcamCard(host: String, webcamConfig: WebcamConfig) {
+fun WebcamCard(host: String, port: Int = 7125, webcamConfig: WebcamConfig) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -592,8 +593,8 @@ fun WebcamCard(host: String, webcamConfig: WebcamConfig) {
             }
 
             if (host.isNotBlank()) {
-                val streamUrl = remember(host, webcamConfig.customUrl, webcamConfig.streamType) {
-                    webcamConfig.resolveStreamUrl(host)
+                val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType) {
+                    webcamConfig.resolveStreamUrl(host, port)
                 }
                 key(streamUrl) {
                     AndroidView(
@@ -1153,6 +1154,16 @@ fun WebcamSettingsDialog(
     var snapshotUrl by remember { mutableStateOf(current.snapshotUrl.ifBlank { "/webcam/?action=snapshot" }) }
     var showCrownestPicker by remember { mutableStateOf(false) }
 
+    // Auto-Erkennung: ersten Kamera direkt in die Felder übernehmen
+    LaunchedEffect(uiState.crownestAutoDetectedCam) {
+        val cam = uiState.crownestAutoDetectedCam ?: return@LaunchedEffect
+        val host = uiState.config.host
+        streamUrl = "http://$host:${cam.port}/?action=stream"
+        snapshotUrl = "http://$host:${cam.port}/?action=snapshot"
+        name = cam.name
+        viewModel.clearCrownestAutoDetected()
+    }
+
     // Wenn Crownest-Erkennung abgeschlossen und Auswahl-Dialog angefragt
     if (showCrownestPicker && uiState.crownestCams.isNotEmpty()) {
         AlertDialog(
@@ -1230,7 +1241,27 @@ fun WebcamSettingsDialog(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Crownest Auto-Detect
+                // Crownest Auto-Erkennung (direkt erste Kamera übernehmen)
+                Button(
+                    onClick = { viewModel.autoDetectFirstCam() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AccentYellow,
+                        contentColor = Color(0xFF121212)
+                    ),
+                    enabled = !uiState.crownestDetecting
+                ) {
+                    if (uiState.crownestDetecting) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color(0xFF121212))
+                        Spacer(Modifier.width(8.dp))
+                    } else {
+                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text("URL auto-erkennen", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+
+                // Crownest manueller Picker
                 Button(
                     onClick = {
                         viewModel.detectCrownest()
@@ -1250,7 +1281,7 @@ fun WebcamSettingsDialog(
                         Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
                     }
-                    Text("Aus crowsnest.conf laden", fontSize = 13.sp)
+                    Text("Aus crowsnest.conf laden (Auswahl)", fontSize = 13.sp)
                 }
                 OutlinedTextField(
                     value = name,
