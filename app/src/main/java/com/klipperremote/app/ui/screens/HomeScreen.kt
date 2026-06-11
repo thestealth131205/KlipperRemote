@@ -261,7 +261,7 @@ fun HomeScreen(
                                 }
                             }
                         }
-                        items(uiState.files, key = { it.filename }) { file ->
+                        items(uiState.files, key = { "${it.filename}_${it.modified}" }) { file ->
                             PrintFileRow(
                                 file = file,
                                 onPrint = { viewModel.startPrint(file.filename) },

@@ -86,7 +86,7 @@ fun GcodeFileBrowserDialog(
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {
-                        items(files, key = { it.filename }) { file ->
+                        items(files, key = { "${it.filename}_${it.modified}" }) { file ->
                             GcodeFileItem(
                                 file = file,
                                 onClick = { onSelectFile(file.filename) },
