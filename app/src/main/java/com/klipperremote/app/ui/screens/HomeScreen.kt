@@ -1829,8 +1829,7 @@ fun WebcamSettingsDialog(
                     val path = streamUrl.trim()
                     val key = uiState.config.apiKey
                     if (host.isBlank() || path.isBlank()) return@run ""
-                    val sep = if (path.contains("?")) "&" else "?"
-                    val keyPart = if (key.isNotBlank()) "${sep}apikey=$key" else ""
+                    val keyPart = if (key.isNotBlank()) "?apikey=$key" else ""
                     if (path.startsWith("/")) "http://$host:$port$path$keyPart"
                     else if (key.isNotBlank()) "$path?apikey=$key" else path
                 }

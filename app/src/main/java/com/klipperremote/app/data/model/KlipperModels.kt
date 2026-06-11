@@ -69,8 +69,7 @@ data class WebcamConfig(
         val snap = snapshotUrl.ifBlank { return "" }
         val ePort = effectivePort(moonrakerPort)
         return if (snap.startsWith("/")) {
-            val sep = if (snap.contains("?")) "&" else "?"
-            val keyp = if (apiKey.isNotBlank()) "${sep}apikey=$apiKey" else ""
+            val keyp = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
             "http://$host:$ePort$snap$keyp"
         } else {
             if (apiKey.isNotBlank()) "$snap?apikey=$apiKey" else snap
@@ -83,8 +82,7 @@ data class WebcamConfig(
         if (customUrl.isNotBlank()) {
             return if (customUrl.startsWith("/")) {
                 // Relativer Pfad → host:effectivePort + Pfad + API-Key
-                val sep = if (customUrl.contains("?")) "&" else "?"
-                val relKeyParam = if (apiKey.isNotBlank()) "${sep}apikey=$apiKey" else ""
+                val relKeyParam = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
                 "http://$host:$ePort$customUrl$relKeyParam"
             } else {
                 // Absolute URL (Rückwärtskompatibilität) → unverändert + API-Key
