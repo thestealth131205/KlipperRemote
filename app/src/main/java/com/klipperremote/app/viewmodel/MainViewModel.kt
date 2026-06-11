@@ -16,6 +16,7 @@ import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.WebcamConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.klipperremote.app.data.network.ApiRequestQueue
 import com.klipperremote.app.data.repository.KlipperRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
@@ -74,6 +75,9 @@ class MainViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
+    /** Serialisierte Warteschlange für alle API-Anfragen. */
+    private val queue = ApiRequestQueue(viewModelScope)
+
     init {
         viewModelScope.launch {
             repository.configFlow.collect { config ->
@@ -99,71 +103,75 @@ class MainViewModel @Inject constructor(
     }
 
     private fun startPolling() {
+        // Temperatur: alle 2 Sekunden, HIGH-Priorität
         viewModelScope.launch {
-            fetchPowerDevices()
             while (true) {
-                fetchTemperatures()
-                fetchPrinterStatus()
-                fetchPosition()
-                fetchPrintProgress()
-                delay(3000L)
+                queue.enqueueHigh { fetchTemperaturesInternal() }
+                delay(2000L)
             }
         }
+        // Hintergrunddaten: alle 4 Sekunden, NORMAL-Priorität (sequenziell via Queue)
+        viewModelScope.launch {
+            queue.enqueueNormal { fetchPowerDevicesInternal() }
+            while (true) {
+                delay(4000L)
+                queue.enqueueNormal { fetchPrinterStatusInternal() }
+                queue.enqueueNormal { fetchPositionInternal() }
+                queue.enqueueNormal { fetchPrintProgressInternal() }
+            }
+        }
+        // Power-Geräte seltener aktualisieren
         viewModelScope.launch {
             while (true) {
-                delay(10000L)
-                fetchPowerDevices()
+                delay(15000L)
+                queue.enqueueNormal { fetchPowerDevicesInternal() }
             }
         }
     }
 
     fun fetchTemperatures() {
-        viewModelScope.launch {
-            repository.getTemperatures()
-                .onSuccess { temps ->
-                    _uiState.update { it.copy(temperatures = temps, isLoading = false, connectionFailed = false) }
-                }
-                .onFailure {
-                    _uiState.update { it.copy(connectionFailed = true) }
-                }
-        }
+        queue.enqueueHigh { fetchTemperaturesInternal() }
     }
 
-    private fun fetchPrinterStatus() {
-        viewModelScope.launch {
-            repository.getPrinterStatus()
-                .onSuccess { status ->
-                    _uiState.update { it.copy(printerState = status.state) }
-                }
-        }
+    private suspend fun fetchTemperaturesInternal() {
+        repository.getTemperatures()
+            .onSuccess { temps ->
+                _uiState.update { it.copy(temperatures = temps, isLoading = false, connectionFailed = false) }
+            }
+            .onFailure {
+                _uiState.update { it.copy(connectionFailed = true) }
+            }
     }
 
-    private fun fetchPrintProgress() {
-        viewModelScope.launch {
-            repository.getPrintProgress()
-                .onSuccess { progress ->
-                    _uiState.update { it.copy(printProgress = progress) }
-                }
-        }
+    private suspend fun fetchPrinterStatusInternal() {
+        repository.getPrinterStatus()
+            .onSuccess { status ->
+                _uiState.update { it.copy(printerState = status.state) }
+            }
     }
 
-    private fun fetchPosition() {
-        viewModelScope.launch {
-            repository.getPosition()
-                .onSuccess { pos ->
-                    _uiState.update { it.copy(position = pos) }
-                }
-        }
+    private suspend fun fetchPrintProgressInternal() {
+        repository.getPrintProgress()
+            .onSuccess { progress ->
+                _uiState.update { it.copy(printProgress = progress) }
+            }
+    }
+
+    private suspend fun fetchPositionInternal() {
+        repository.getPosition()
+            .onSuccess { pos ->
+                _uiState.update { it.copy(position = pos) }
+            }
     }
 
     fun setTemperature(heaterName: String, target: Float) {
-        viewModelScope.launch {
+        queue.enqueueHigh {
             repository.setTemperature(heaterName, target)
                 .onSuccess {
                     _uiState.update { it.copy(setTempSuccess = "Temperatur gesetzt: $target°C") }
                     delay(2000L)
                     _uiState.update { it.copy(setTempSuccess = null) }
-                    fetchTemperatures()
+                    fetchTemperaturesInternal()
                 }
                 .onFailure { e ->
                     _uiState.update { it.copy(error = "Fehler: ${e.message}") }
@@ -172,7 +180,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun jogMove(axis: String, distance: Float) {
-        viewModelScope.launch {
+        queue.enqueueHigh {
             repository.jogMove(axis, distance)
                 .onFailure { e ->
                     _uiState.update { it.copy(error = "Bewegung fehlgeschlagen: ${e.message}") }
@@ -181,7 +189,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun homeAxes(axes: String = "") {
-        viewModelScope.launch {
+        queue.enqueueHigh {
             repository.homeAxes(axes)
                 .onSuccess {
                     showGcodeResult(if (axes.isBlank()) "Alle Achsen gehomed" else "$axes gehomed")
@@ -193,7 +201,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun extrude(amount: Float) {
-        viewModelScope.launch {
+        queue.enqueueHigh {
             repository.extrude(amount)
                 .onSuccess {
                     val label = if (amount > 0) "+${amount.toInt()} mm extrudiert" else "${amount.toInt()} mm retrahiert"
@@ -206,7 +214,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun sendGcode(gcode: String) {
-        viewModelScope.launch {
+        queue.enqueueHigh {
             repository.sendGcode(gcode)
                 .onSuccess { showGcodeResult("GCode gesendet: $gcode") }
                 .onFailure { e ->
@@ -226,7 +234,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun loadFiles() {
-        viewModelScope.launch {
+        queue.enqueueNormal {
             repository.getFiles()
                 .onSuccess { files ->
                     _uiState.update { it.copy(files = files) }
@@ -235,11 +243,11 @@ class MainViewModel @Inject constructor(
     }
 
     fun startPrint(filename: String) {
-        viewModelScope.launch {
+        queue.enqueueHigh {
             repository.startPrint(filename)
                 .onSuccess {
                     showGcodeResult("Druck gestartet: $filename")
-                    fetchPrinterStatus()
+                    fetchPrinterStatusInternal()
                 }
                 .onFailure { e ->
                     _uiState.update { it.copy(error = "Druck-Start fehlgeschlagen: ${e.message}") }
@@ -248,7 +256,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun loadMacros() {
-        viewModelScope.launch {
+        queue.enqueueNormal {
             repository.getMacros()
                 .onSuccess { macros ->
                     _uiState.update { it.copy(macros = macros) }
@@ -268,24 +276,22 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    private fun fetchPowerDevices() {
-        viewModelScope.launch {
-            repository.getPowerDevices()
-                .onSuccess { devices ->
-                    _uiState.update { it.copy(powerDevices = devices, connectionFailed = false) }
-                    if (devices.isNotEmpty()) repository.saveCachedPowerDevices(devices)
-                }
-                .onFailure {
-                    _uiState.update { it.copy(connectionFailed = true) }
-                }
-        }
+    private suspend fun fetchPowerDevicesInternal() {
+        repository.getPowerDevices()
+            .onSuccess { devices ->
+                _uiState.update { it.copy(powerDevices = devices, connectionFailed = false) }
+                if (devices.isNotEmpty()) repository.saveCachedPowerDevices(devices)
+            }
+            .onFailure {
+                _uiState.update { it.copy(connectionFailed = true) }
+            }
     }
 
     fun togglePowerDevice(device: String, on: Boolean) {
-        viewModelScope.launch {
+        queue.enqueueHigh {
             repository.togglePowerDevice(device, on)
                 .onSuccess {
-                    fetchPowerDevices()
+                    fetchPowerDevicesInternal()
                 }
                 .onFailure { e ->
                     _uiState.update { it.copy(error = "Power-Fehler: ${e.message}") }
@@ -298,8 +304,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun loadGcodePreview(filename: String) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(gcodePreviewLoading = true, gcodePreviewMetadata = null, gcodePreviewThumbnail = null) }
+        _uiState.update { it.copy(gcodePreviewLoading = true, gcodePreviewMetadata = null, gcodePreviewThumbnail = null) }
+        queue.enqueueNormal {
             repository.getGcodeMetadata(filename)
                 .onSuccess { meta ->
                     _uiState.update { it.copy(gcodePreviewMetadata = meta, gcodePreviewLoading = false) }
@@ -319,8 +325,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun loadGCodeViewer(filename: String) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(gcodeViewerLoading = true, gcodeViewerError = null, gcodeViewerLayers = emptyList()) }
+        _uiState.update { it.copy(gcodeViewerLoading = true, gcodeViewerError = null, gcodeViewerLayers = emptyList()) }
+        queue.enqueueNormal {
             // Bettgröße laden
             repository.getBedSize().onSuccess { bed ->
                 _uiState.update { it.copy(gcodeViewerBedSize = bed) }
@@ -397,8 +403,8 @@ class MainViewModel @Inject constructor(
     // ── Maschine / Konfigurationsdateien ────────────────────────────────────────
 
     fun loadConfigFiles() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(configFilesLoading = true) }
+        _uiState.update { it.copy(configFilesLoading = true) }
+        queue.enqueueNormal {
             repository.listConfigFiles()
                 .onSuccess { files ->
                     _uiState.update { it.copy(configFiles = files, configFilesLoading = false) }
@@ -410,8 +416,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun openConfigFile(path: String) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(editingConfigPath = path, editingConfigContent = "", editingConfigError = null, editingConfigSaved = false) }
+        _uiState.update { it.copy(editingConfigPath = path, editingConfigContent = "", editingConfigError = null, editingConfigSaved = false) }
+        queue.enqueueNormal {
             repository.readConfigFile(path)
                 .onSuccess { content ->
                     _uiState.update { it.copy(editingConfigContent = content) }
@@ -424,8 +430,8 @@ class MainViewModel @Inject constructor(
 
     fun saveCurrentConfigFile(content: String) {
         val path = _uiState.value.editingConfigPath ?: return
-        viewModelScope.launch {
-            _uiState.update { it.copy(editingConfigSaving = true, editingConfigSaved = false, editingConfigError = null) }
+        _uiState.update { it.copy(editingConfigSaving = true, editingConfigSaved = false, editingConfigError = null) }
+        queue.enqueueHigh {
             repository.saveConfigFile(path, content)
                 .onSuccess {
                     _uiState.update { it.copy(editingConfigSaving = false, editingConfigSaved = true) }
@@ -447,7 +453,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun restartHost() {
-        viewModelScope.launch {
+        queue.enqueueHigh {
             repository.restartHost()
                 .onSuccess {
                     _uiState.update { it.copy(gcodeResult = "Host-Neustart ausgelöst…") }
@@ -468,25 +474,27 @@ class MainViewModel @Inject constructor(
             if (host.isBlank()) return@launch
             if (_uiState.value.webcamConfig.customUrl.isNotBlank()) return@launch
 
-            repository.detectCrownestCams()
-                .onSuccess { cams ->
-                    val cam = cams.firstOrNull() ?: return@onSuccess
-                    val currentConfig = _uiState.value.webcamConfig
-                    if (currentConfig.customUrl.isNotBlank()) return@onSuccess
-                    repository.saveWebcamConfig(
-                        currentConfig.copy(
-                            name = cam.name,
-                            customUrl = "http://$host:${cam.port}/?action=stream",
-                            snapshotUrl = "http://$host:${cam.port}/?action=snapshot"
+            queue.enqueueNormal {
+                repository.detectCrownestCams()
+                    .onSuccess { cams ->
+                        val cam = cams.firstOrNull() ?: return@onSuccess
+                        val currentConfig = _uiState.value.webcamConfig
+                        if (currentConfig.customUrl.isNotBlank()) return@onSuccess
+                        repository.saveWebcamConfig(
+                            currentConfig.copy(
+                                name = cam.name,
+                                customUrl = "http://$host:${cam.port}/?action=stream",
+                                snapshotUrl = "http://$host:${cam.port}/?action=snapshot"
+                            )
                         )
-                    )
-                }
+                    }
+            }
         }
     }
 
     fun detectCrownest() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(crownestDetecting = true, crownestCams = emptyList()) }
+        _uiState.update { it.copy(crownestDetecting = true, crownestCams = emptyList()) }
+        queue.enqueueNormal {
             repository.detectCrownestCams()
                 .onSuccess { cams ->
                     _uiState.update { it.copy(crownestCams = cams, crownestDetecting = false) }
@@ -502,8 +510,8 @@ class MainViewModel @Inject constructor(
     }
 
     fun autoDetectFirstCam() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(crownestDetecting = true, crownestAutoDetectedCam = null) }
+        _uiState.update { it.copy(crownestDetecting = true, crownestAutoDetectedCam = null) }
+        queue.enqueueNormal {
             repository.detectCrownestCams()
                 .onSuccess { cams ->
                     _uiState.update { it.copy(crownestDetecting = false, crownestAutoDetectedCam = cams.firstOrNull()) }
