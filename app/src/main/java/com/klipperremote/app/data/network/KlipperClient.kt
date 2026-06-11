@@ -3,12 +3,16 @@ package com.klipperremote.app.data.network
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.klipperremote.app.data.model.GcodeMetadata
+import com.klipperremote.app.data.model.ConfigFile
+import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -355,6 +359,108 @@ class KlipperClient(private val config: KlipperConfig) {
                 ?.takeIf { it >= 0.0 }?.toFloat()
         } catch (e: Exception) {
             null
+        }
+    }
+
+    // Konfigurationsdateien auflisten (root=config)
+    suspend fun listConfigFiles(): List<ConfigFile> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$baseUrl/server/files/list?root=config").get().build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext emptyList()
+            val json = JSONObject(body)
+            val result = json.optJSONArray("result") ?: return@withContext emptyList()
+            val files = mutableListOf<ConfigFile>()
+            for (i in 0 until result.length()) {
+                val obj = result.optJSONObject(i) ?: continue
+                val path = obj.optString("path", "").ifBlank { continue }
+                files.add(
+                    ConfigFile(
+                        path = path,
+                        modified = (obj.optDouble("modified", 0.0) * 1000).toLong(),
+                        size = obj.optLong("size", 0L)
+                    )
+                )
+            }
+            files.sortedWith(compareBy({ it.directory }, { it.filename }))
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // Konfigurationsdatei herunterladen
+    suspend fun readConfigFile(path: String): String = withContext(Dispatchers.IO) {
+        val encoded = URLEncoder.encode(path, "UTF-8").replace("+", "%20")
+        val req = Request.Builder().url("$baseUrl/server/files/config/$encoded").get().build()
+        val resp = client.newCall(req).execute()
+        if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        resp.body?.string() ?: ""
+    }
+
+    // Konfigurationsdatei speichern (Moonraker-Upload)
+    suspend fun saveConfigFile(path: String, content: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val filename = path.substringAfterLast('/')
+            val directory = path.substringBeforeLast('/', "")
+            val fileBody = content.toByteArray(Charsets.UTF_8).toRequestBody("text/plain".toMediaType())
+            val multipart = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("root", "config")
+                .apply { if (directory.isNotBlank()) addFormDataPart("path", directory) }
+                .addFormDataPart("file", filename, fileBody)
+                .build()
+            val req = Request.Builder().url("$baseUrl/server/files/upload").post(multipart).build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        }
+    }
+
+    // Crowsnest-Konfiguration parsen → Liste der konfigurierten Kameras
+    suspend fun detectCrownestCams(): List<CrownestCam> = withContext(Dispatchers.IO) {
+        try {
+            // Typische Dateinamen: crowsnest.conf oder crownest.conf
+            val candidates = listOf("crowsnest.conf", "crownest.conf", "crowsnest.cfg", "crownest.cfg")
+            var content: String? = null
+            for (name in candidates) {
+                runCatching {
+                    val encoded = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
+                    val req = Request.Builder().url("$baseUrl/server/files/config/$encoded").get().build()
+                    val resp = client.newCall(req).execute()
+                    if (resp.isSuccessful) content = resp.body?.string()
+                }
+                if (content != null) break
+            }
+            val raw = content ?: return@withContext emptyList()
+            // INI-Format parsen
+            val cams = mutableListOf<CrownestCam>()
+            var currentSection: String? = null
+            var currentPort = 0
+            var currentMode = "ustreamer"
+            for (line in raw.lines()) {
+                val trimmed = line.trim()
+                if (trimmed.startsWith('#') || trimmed.isBlank()) continue
+                if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                    if (currentSection != null && currentSection!!.startsWith("cam ") && currentPort > 0) {
+                        cams.add(CrownestCam(currentSection!!, currentPort, currentMode))
+                    }
+                    currentSection = trimmed.removeSurrounding("[", "]").trim()
+                    currentPort = 0
+                    currentMode = "ustreamer"
+                } else {
+                    val key = trimmed.substringBefore(':').trim().lowercase()
+                    val value = trimmed.substringAfter(':', "").trim()
+                    when (key) {
+                        "port" -> currentPort = value.toIntOrNull() ?: 0
+                        "mode" -> currentMode = value.lowercase()
+                    }
+                }
+            }
+            if (currentSection != null && currentSection!!.startsWith("cam ") && currentPort > 0) {
+                cams.add(CrownestCam(currentSection!!, currentPort, currentMode))
+            }
+            cams
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 

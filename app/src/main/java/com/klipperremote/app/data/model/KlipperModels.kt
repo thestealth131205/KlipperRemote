@@ -108,3 +108,18 @@ data class GcodeMetadata(
     val thumbnailUrl: String? = null,
     val estimatedTime: Int? = null  // seconds
 )
+
+data class ConfigFile(
+    val path: String,          // relativer Pfad inkl. Unterverzeichnisse
+    val modified: Long = 0L,
+    val size: Long = 0L
+) {
+    val filename: String get() = path.substringAfterLast('/')
+    val directory: String get() = path.substringBeforeLast('/', "")
+}
+
+data class CrownestCam(
+    val name: String,
+    val port: Int,
+    val mode: String  // "ustreamer" | "camera-streamer"
+)

@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import android.graphics.Bitmap
+import com.klipperremote.app.data.model.ConfigFile
+import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
@@ -206,5 +208,29 @@ class KlipperRepository @Inject constructor(
         val config = configFlow.first()
         if (config.host.isBlank()) return null
         return try { KlipperClient(config).fetchImageBitmap(url) } catch (e: Exception) { null }
+    }
+
+    suspend fun listConfigFiles(): Result<List<ConfigFile>> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).listConfigFiles() }
+    }
+
+    suspend fun readConfigFile(path: String): Result<String> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).readConfigFile(path) }
+    }
+
+    suspend fun saveConfigFile(path: String, content: String): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).saveConfigFile(path, content)
+    }
+
+    suspend fun detectCrownestCams(): Result<List<CrownestCam>> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).detectCrownestCams() }
     }
 }

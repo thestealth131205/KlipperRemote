@@ -20,6 +20,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.klipperremote.app.ui.screens.GCodeViewerScreen
 import com.klipperremote.app.ui.screens.HomeScreen
+import com.klipperremote.app.ui.screens.MachineConfigScreen
 import com.klipperremote.app.ui.screens.PrintProgressBar
 import com.klipperremote.app.ui.screens.SettingsScreen
 import com.klipperremote.app.ui.theme.KlipperRemoteTheme
@@ -54,6 +55,7 @@ class MainActivity : ComponentActivity() {
                     composable("home") {
                         HomeScreen(
                             onNavigateToSettings = { navController.navigate("settings") },
+                            onNavigateToMachine = { navController.navigate("machine_config") },
                             onOpenGCodeViewer = { filename ->
                                 val encoded = java.net.URLEncoder.encode(filename, "UTF-8")
                                 navController.navigate("gcode_viewer/$encoded")
@@ -62,6 +64,9 @@ class MainActivity : ComponentActivity() {
                     }
                     composable("settings") {
                         SettingsScreen(onNavigateBack = { navController.popBackStack() })
+                    }
+                    composable("machine_config") {
+                        MachineConfigScreen(onNavigateBack = { navController.popBackStack() })
                     }
                     composable(
                         "gcode_viewer/{filename}",

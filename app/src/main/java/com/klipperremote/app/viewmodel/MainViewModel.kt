@@ -3,6 +3,8 @@ package com.klipperremote.app.viewmodel
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.klipperremote.app.data.model.ConfigFile
+import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.GCodeLayer
 import com.klipperremote.app.data.model.GCodeSegment
 import com.klipperremote.app.data.model.GcodeMetadata
@@ -48,7 +50,18 @@ data class MainUiState(
     val gcodePreviewThumbnail: Bitmap? = null,
     val gcodePreviewLoading: Boolean = false,
     // Druckfortschritt (null = kein aktiver Druck, 0.0–1.0 = aktiv)
-    val printProgress: Float? = null
+    val printProgress: Float? = null,
+    // Maschine / Konfigurationsdateien
+    val configFiles: List<ConfigFile> = emptyList(),
+    val configFilesLoading: Boolean = false,
+    val editingConfigPath: String? = null,
+    val editingConfigContent: String = "",
+    val editingConfigSaving: Boolean = false,
+    val editingConfigSaved: Boolean = false,
+    val editingConfigError: String? = null,
+    // Crownest-Kameraerkennung
+    val crownestCams: List<CrownestCam> = emptyList(),
+    val crownestDetecting: Boolean = false
 )
 
 @HiltViewModel
@@ -357,6 +370,77 @@ class MainViewModel @Inject constructor(
         }
         return layers
     }
+
+    // ── Maschine / Konfigurationsdateien ────────────────────────────────────────
+
+    fun loadConfigFiles() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(configFilesLoading = true) }
+            repository.listConfigFiles()
+                .onSuccess { files ->
+                    _uiState.update { it.copy(configFiles = files, configFilesLoading = false) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(configFilesLoading = false, editingConfigError = e.message) }
+                }
+        }
+    }
+
+    fun openConfigFile(path: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(editingConfigPath = path, editingConfigContent = "", editingConfigError = null, editingConfigSaved = false) }
+            repository.readConfigFile(path)
+                .onSuccess { content ->
+                    _uiState.update { it.copy(editingConfigContent = content) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(editingConfigError = e.message) }
+                }
+        }
+    }
+
+    fun saveCurrentConfigFile(content: String) {
+        val path = _uiState.value.editingConfigPath ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(editingConfigSaving = true, editingConfigSaved = false, editingConfigError = null) }
+            repository.saveConfigFile(path, content)
+                .onSuccess {
+                    _uiState.update { it.copy(editingConfigSaving = false, editingConfigSaved = true) }
+                    delay(2000L)
+                    _uiState.update { it.copy(editingConfigSaved = false) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(editingConfigSaving = false, editingConfigError = e.message) }
+                }
+        }
+    }
+
+    fun updateEditingConfigContent(content: String) {
+        _uiState.update { it.copy(editingConfigContent = content) }
+    }
+
+    fun closeConfigEditor() {
+        _uiState.update { it.copy(editingConfigPath = null, editingConfigContent = "", editingConfigError = null, editingConfigSaved = false) }
+    }
+
+    fun detectCrownest() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(crownestDetecting = true, crownestCams = emptyList()) }
+            repository.detectCrownestCams()
+                .onSuccess { cams ->
+                    _uiState.update { it.copy(crownestCams = cams, crownestDetecting = false) }
+                }
+                .onFailure {
+                    _uiState.update { it.copy(crownestDetecting = false) }
+                }
+        }
+    }
+
+    fun clearCrownest() {
+        _uiState.update { it.copy(crownestCams = emptyList()) }
+    }
+
+    // ── G-Code Viewer ────────────────────────────────────────────────────────────
 
     private fun showGcodeResult(msg: String) {
         viewModelScope.launch {

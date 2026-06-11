@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
@@ -42,6 +43,7 @@ import com.klipperremote.app.viewmodel.MainViewModel
 @Composable
 fun HomeScreen(
     onNavigateToSettings: () -> Unit,
+    onNavigateToMachine: () -> Unit = {},
     onOpenGCodeViewer: (String) -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
@@ -60,7 +62,9 @@ fun HomeScreen(
         bottomBar = {
             BottomControlBar(
                 printerState = uiState.printerState,
-                onNavigateToSettings = onNavigateToSettings,
+                onNavigateToAppConfig = onNavigateToSettings,
+                onOpenWebcamConfig = { showWebcamSettings = true },
+                onNavigateToMachine = onNavigateToMachine,
                 onStartPrint = { showGcodeFileBrowser = true }
             )
         }
@@ -1006,9 +1010,12 @@ fun PowerDialog(
 @Composable
 fun BottomControlBar(
     printerState: String,
-    onNavigateToSettings: () -> Unit,
+    onNavigateToAppConfig: () -> Unit,
+    onOpenWebcamConfig: () -> Unit,
+    onNavigateToMachine: () -> Unit,
     onStartPrint: () -> Unit = {}
 ) {
+    var showMenu by remember { mutableStateOf(false) }
     val statusText = when (printerState) {
         "ready" -> "Leerlauf"
         "printing" -> "Druckt"
@@ -1072,20 +1079,50 @@ fun BottomControlBar(
 
             Spacer(modifier = Modifier.weight(0.05f))
 
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(SurfaceVariant)
-                    .clickable { onNavigateToSettings() },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.Menu,
-                    contentDescription = "Menü",
-                    tint = OnSurface,
-                    modifier = Modifier.size(18.dp)
-                )
+            Box {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(SurfaceVariant)
+                        .clickable { showMenu = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Menu,
+                        contentDescription = "Menü",
+                        tint = OnSurface,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false },
+                    containerColor = Color(0xFF1E1E1E)
+                ) {
+                    Text(
+                        "Konfiguration",
+                        color = Color(0xFF888888),
+                        fontSize = 11.sp,
+                        modifier = androidx.compose.ui.Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                    HorizontalDivider(color = Color(0xFF333333))
+                    DropdownMenuItem(
+                        text = { Text("App Konfiguration", color = OnSurface) },
+                        leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
+                        onClick = { showMenu = false; onNavigateToAppConfig() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Webcam Konfiguration", color = OnSurface) },
+                        leadingIcon = { Icon(Icons.Default.Videocam, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
+                        onClick = { showMenu = false; onOpenWebcamConfig() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Maschine", color = OnSurface) },
+                        leadingIcon = { Icon(Icons.Default.Build, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
+                        onClick = { showMenu = false; onNavigateToMachine() }
+                    )
+                }
             }
         }
     }
@@ -1098,11 +1135,56 @@ fun BottomControlBar(
 fun WebcamSettingsDialog(
     current: WebcamConfig,
     onSave: (WebcamConfig) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    viewModel: MainViewModel = hiltViewModel()
 ) {
+    val uiState by viewModel.uiState.collectAsState()
     var name by remember { mutableStateOf(current.name) }
     var streamUrl by remember { mutableStateOf(current.customUrl.ifBlank { "/webcam/?action=stream" }) }
     var snapshotUrl by remember { mutableStateOf(current.snapshotUrl.ifBlank { "/webcam/?action=snapshot" }) }
+    var showCrownestPicker by remember { mutableStateOf(false) }
+
+    // Wenn Crownest-Erkennung abgeschlossen und Auswahl-Dialog angefragt
+    if (showCrownestPicker && uiState.crownestCams.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { showCrownestPicker = false; viewModel.clearCrownest() },
+            containerColor = Color(0xFF1E1E1E),
+            title = { Text("Kamera auswählen", color = OnSurface, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    uiState.crownestCams.forEach { cam ->
+                        val streamPath = if (cam.mode.contains("camera-streamer")) "/?action=stream" else "/?action=stream"
+                        val snapPath  = if (cam.mode.contains("camera-streamer")) "/?action=snapshot" else "/?action=snapshot"
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val host = uiState.config.host
+                                    streamUrl  = "http://$host:${cam.port}$streamPath"
+                                    snapshotUrl = "http://$host:${cam.port}$snapPath"
+                                    name = cam.name
+                                    showCrownestPicker = false
+                                    viewModel.clearCrownest()
+                                },
+                            color = Color(0xFF2A2A2A),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(cam.name, color = OnSurface, fontWeight = FontWeight.SemiBold)
+                                Text("Port ${cam.port} · ${cam.mode}", color = Color(0xFF888888), fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showCrownestPicker = false; viewModel.clearCrownest() }) {
+                    Text("Abbrechen", color = OnSurfaceDim)
+                }
+            }
+        )
+    }
     var selectedService by remember { mutableStateOf(current.streamType) }
     var fps by remember { mutableStateOf(current.fps.toString()) }
     var selectedRotate by remember { mutableStateOf(current.rotate) }
@@ -1139,6 +1221,28 @@ fun WebcamSettingsDialog(
                     .fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Crownest Auto-Detect
+                Button(
+                    onClick = {
+                        viewModel.detectCrownest()
+                        showCrownestPicker = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF2A2A2A),
+                        contentColor = AccentYellow
+                    ),
+                    enabled = !uiState.crownestDetecting
+                ) {
+                    if (uiState.crownestDetecting) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = AccentYellow)
+                        Spacer(Modifier.width(8.dp))
+                    } else {
+                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text("Aus crowsnest.conf laden", fontSize = 13.sp)
+                }
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
