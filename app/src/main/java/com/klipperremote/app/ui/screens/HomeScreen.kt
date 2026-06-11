@@ -45,6 +45,7 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToMachine: () -> Unit = {},
     onOpenGCodeViewer: (String) -> Unit = {},
+    onNavigateToCrashLog: () -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -65,7 +66,8 @@ fun HomeScreen(
                 onNavigateToAppConfig = onNavigateToSettings,
                 onOpenWebcamConfig = { showWebcamSettings = true },
                 onNavigateToMachine = onNavigateToMachine,
-                onStartPrint = { showGcodeFileBrowser = true }
+                onStartPrint = { showGcodeFileBrowser = true },
+                onNavigateToCrashLog = onNavigateToCrashLog
             )
         }
     ) { padding ->
@@ -1013,7 +1015,8 @@ fun BottomControlBar(
     onNavigateToAppConfig: () -> Unit,
     onOpenWebcamConfig: () -> Unit,
     onNavigateToMachine: () -> Unit,
-    onStartPrint: () -> Unit = {}
+    onStartPrint: () -> Unit = {},
+    onNavigateToCrashLog: () -> Unit = {}
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val statusText = when (printerState) {
@@ -1121,6 +1124,12 @@ fun BottomControlBar(
                         text = { Text("Maschine", color = OnSurface) },
                         leadingIcon = { Icon(Icons.Default.Build, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
                         onClick = { showMenu = false; onNavigateToMachine() }
+                    )
+                    HorizontalDivider(color = Color(0xFF333333))
+                    DropdownMenuItem(
+                        text = { Text("Crash Log", color = Color(0xFFFF5555)) },
+                        leadingIcon = { Icon(Icons.Default.BugReport, contentDescription = null, tint = Color(0xFFFF5555), modifier = Modifier.size(18.dp)) },
+                        onClick = { showMenu = false; onNavigateToCrashLog() }
                     )
                 }
             }

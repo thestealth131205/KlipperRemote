@@ -18,6 +18,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.klipperremote.app.ui.screens.CrashLogScreen
 import com.klipperremote.app.ui.screens.GCodeViewerScreen
 import com.klipperremote.app.ui.screens.HomeScreen
 import com.klipperremote.app.ui.screens.MachineConfigScreen
@@ -59,11 +60,15 @@ class MainActivity : ComponentActivity() {
                             onOpenGCodeViewer = { filename ->
                                 val encoded = java.net.URLEncoder.encode(filename, "UTF-8")
                                 navController.navigate("gcode_viewer/$encoded")
-                            }
+                            },
+                            onNavigateToCrashLog = { navController.navigate("crash_log") }
                         )
                     }
                     composable("settings") {
                         SettingsScreen(onNavigateBack = { navController.popBackStack() })
+                    }
+                    composable("crash_log") {
+                        CrashLogScreen(onNavigateBack = { navController.popBackStack() })
                     }
                     composable("machine_config") {
                         MachineConfigScreen(onNavigateBack = { navController.popBackStack() })
