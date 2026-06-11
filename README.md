@@ -4,12 +4,70 @@ Eine Android-App (Jetpack Compose) zur Fernsteuerung von 3D-Druckern über
 [Moonraker](https://moonraker.readthedocs.io/) / Klipper – Temperaturen setzen,
 Webcam-Stream ansehen und Druckstatus überwachen.
 
-## Features
+## Was die App alles kann
 
-- Temperatur-Übersicht (Extruder, Heizbett, Kammer) mit Soll-Werten setzen
-- Webcam-Stream (MJPEG)
-- Druckerstatus-Polling über Moonraker
-- Dunkles, modernes UI mit farbigen Akzenten
+- **Temperatur-Steuerung** – Übersicht für Extruder, Heizbett und Kammer; Soll-Temperaturen direkt setzen.
+- **Webcam-Stream** – Live-Bild des Druckers per MJPEG.
+- **Druckerstatus-Polling** – laufende Statusabfrage über Moonraker (Leerlauf / Druckt / Pausiert / Fehler).
+- **Detaillierter Druckstatus** – Restzeit, ETA, Druckgeschwindigkeit, Filamentverbrauch, Z-Höhe und Druckname.
+- **Druck-Steuerung** – Druck über die Bottombar starten, pausieren oder abbrechen.
+- **GCode-Datei-Browser** – auf dem Drucker gespeicherte Dateien durchsuchen und Druck starten.
+- **GCode-Viewer** – Vorschau mit Schicht-Slider, Zoom und farbiger Pfad-Legende.
+- **Achsensteuerung & Makros** – Achsen bewegen, Homing ausführen und eigene G-Code-Makros anlegen.
+- **Konfigurations-Editor** – Klipper-/KlipperScreen-Konfigurationsdateien (z. B. `printer.cfg`,
+  `KlipperScreen.conf`) direkt in der App mit Syntax-Hervorhebung bearbeiten und speichern.
+- **Push-Benachrichtigung** – laufender Fortschritt und ETA als Notification während des Drucks.
+- **Crash-Log-Anzeige** – integrierte Fehlerprotokolle zur Diagnose.
+- **Dunkles, modernes UI** mit farbigen Akzenten.
+
+## Screenshots
+
+| Übersicht & Temperaturen | Druckstatus | Bewegen & Makros |
+|---|---|---|
+| ![Übersicht](docs/screenshots/01-uebersicht.png) | ![Druckstatus](docs/screenshots/02-druckstatus.png) | ![Bewegen & Makros](docs/screenshots/03-bewegen-makros.png) |
+
+| GCode-Viewer | Benachrichtigung | Konfigurations-Editor |
+|---|---|---|
+| ![GCode-Viewer](docs/screenshots/04-gcode-viewer.png) | ![Benachrichtigung](docs/screenshots/05-benachrichtigung.png) | ![Konfigurations-Editor](docs/screenshots/06-config-editor.png) |
+
+## Einrichtung & Verbindung
+
+Beim ersten Start öffnest du die **Einstellungen** und trägst die Verbindungsdaten
+deines Druckers ein:
+
+| Feld | Beschreibung |
+|------|--------------|
+| **Host / IP-Adresse** | IP oder Hostname des Druckers, auf dem Moonraker läuft (z. B. `192.168.1.50` oder `mainsailos.local`). |
+| **Port** | Moonraker-Port – standardmäßig `7125`. |
+| **API Key** *(optional)* | Nur nötig, wenn Moonraker Authentifizierung verlangt (siehe unten). |
+
+Die App spricht direkt mit der [Moonraker](https://moonraker.readthedocs.io/)-API
+deines Druckers – es ist kein Cloud-Konto und kein externer Server nötig.
+
+### API Key abrufen
+
+In den meisten Mainsail-/Fluidd-Setups ist für Geräte im selben lokalen Netzwerk
+**kein** API Key erforderlich – dann lässt du das Feld einfach leer. Ein Key wird
+nur gebraucht, wenn Moonraker so konfiguriert ist, dass er Authentifizierung
+verlangt (z. B. Zugriff von außerhalb des Heimnetzes oder restriktive
+`[authorization]`-Einstellungen).
+
+Falls du einen API Key benötigst:
+
+1. **Moonraker für Authentifizierung konfigurieren** – in `moonraker.conf` im Abschnitt
+   `[authorization]` ist dein lokales Netz unter `trusted_clients` hinterlegt.
+   Clients außerhalb dieses Bereichs müssen sich per API Key authentifizieren.
+2. **Key auslesen** – Moonraker legt den API Key in der Datei `.moonraker_api_key`
+   im Home-Verzeichnis ab (z. B. `~/printer_data/.moonraker_api_key` bzw.
+   `~/.moonraker_api_key`). Per SSH:
+   ```bash
+   cat ~/printer_data/.moonraker_api_key
+   ```
+3. **Über die Weboberfläche** – in **Mainsail** bzw. **Fluidd** findest du den Key
+   unter *Einstellungen → Allgemein → API Key* und kannst ihn dort kopieren oder neu
+   generieren.
+4. Den kopierten Key trägst du in der App unter **Einstellungen → API Key** ein.
+   Er wird bei jeder Anfrage als `X-Api-Key`-Header an Moonraker gesendet.
 
 ## Build
 

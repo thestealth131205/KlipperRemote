@@ -386,6 +386,29 @@ class KlipperClient(private val config: KlipperConfig) {
         }
     }
 
+    // Slicer-Restzeit-Cache (filename → estimated_time in Sekunden), 1× pro Druck geladen
+    @Volatile private var estimateCache: Pair<String, Int?>? = null
+
+    // Slicer-Gesamtzeit für die aktuell gedruckte Datei (gecacht, null = nicht verfügbar)
+    private suspend fun estimatedTimeFor(filename: String): Int? {
+        if (filename.isBlank()) return null
+        estimateCache?.let { if (it.first == filename) return it.second }
+        val est = getGcodeMetadata(filename).estimatedTime
+        estimateCache = filename to est
+        return est
+    }
+
+    // Fortschritt slicer-zeit-basiert (wie Mainsail/Fluidd): print_duration / estimated_time.
+    // Fallback auf byte-basierten virtual_sdcard.progress, wenn keine Slicer-Schätzung existiert.
+    private suspend fun computeProgress(printDuration: Double, filename: String, fileProgress: Float): Float {
+        val est = estimatedTimeFor(filename)
+        return if (est != null && est > 0) {
+            (printDuration / est).toFloat().coerceIn(0f, 1f)
+        } else {
+            fileProgress.coerceIn(0f, 1f)
+        }
+    }
+
     // Druckfortschritt abfragen (0.0–1.0, null = kein aktiver Druck)
     suspend fun getPrintProgress(): Float? = withContext(Dispatchers.IO) {
         try {
@@ -397,10 +420,16 @@ class KlipperClient(private val config: KlipperConfig) {
             val status = JSONObject(body)
                 .optJSONObject("result")
                 ?.optJSONObject("status") ?: return@withContext null
-            val state = status.optJSONObject("print_stats")?.optString("state", "") ?: ""
+            val ps = status.optJSONObject("print_stats") ?: return@withContext null
+            val state = ps.optString("state", "")
             if (state != "printing" && state != "paused") return@withContext null
-            status.optJSONObject("virtual_sdcard")?.optDouble("progress", -1.0)
-                ?.takeIf { it >= 0.0 }?.toFloat()
+            val fileProgress = status.optJSONObject("virtual_sdcard")
+                ?.optDouble("progress", -1.0)?.takeIf { it >= 0.0 }?.toFloat() ?: 0f
+            computeProgress(
+                printDuration = ps.optDouble("print_duration", 0.0),
+                filename = ps.optString("filename", ""),
+                fileProgress = fileProgress
+            )
         } catch (e: Exception) {
             null
         }
@@ -598,10 +627,14 @@ class KlipperClient(private val config: KlipperConfig) {
                 liveExtVel * Math.PI.toFloat() * r * r
             } else null
 
+            val filename = ps.optString("filename", "")
+            val printDuration = ps.optDouble("print_duration", 0.0)
+            val fileProgress = vSdcard?.optDouble("progress", 0.0)?.toFloat() ?: 0f
+
             PrintStats(
-                filename      = ps.optString("filename", ""),
-                printDuration = ps.optDouble("print_duration", 0.0).toFloat(),
-                progress      = vSdcard?.optDouble("progress", 0.0)?.toFloat() ?: 0f,
+                filename      = filename,
+                printDuration = printDuration.toFloat(),
+                progress      = computeProgress(printDuration, filename, fileProgress),
                 filamentUsed  = ps.optDouble("filament_used", 0.0).toFloat(),
                 currentLayer  = currentLayer,
                 totalLayers   = totalLayers,
