@@ -60,17 +60,17 @@ data class WebcamConfig(
     val iceUsername: String = "",
     val icePassword: String = ""
 ) {
-    fun resolveStreamUrl(host: String): String {
+    fun resolveStreamUrl(host: String, port: Int = 7125): String {
         if (customUrl.isNotBlank()) {
-            // relative path (e.g. "/webcam/?action=stream") → prepend host
-            return if (customUrl.startsWith("/")) "http://$host$customUrl" else customUrl
+            // relative path (e.g. "/webcam/?action=stream") → prepend host with port
+            return if (customUrl.startsWith("/")) "http://$host:$port$customUrl" else customUrl
         }
         if (host.isBlank()) return ""
         return when (streamType) {
-            WebcamStreamType.MJPEG -> "http://$host/webcam/stream"
-            WebcamStreamType.WEBRTC -> "http://$host/webcam/webrtc"
-            WebcamStreamType.HLS -> "http://$host/webcam/hls/stream.m3u8"
-            WebcamStreamType.CAMERA_STREAMER -> "http://$host/webcam/stream"
+            WebcamStreamType.MJPEG -> "http://$host:$port/webcam/stream"
+            WebcamStreamType.WEBRTC -> "http://$host:$port/webcam/webrtc"
+            WebcamStreamType.HLS -> "http://$host:$port/webcam/hls/stream.m3u8"
+            WebcamStreamType.CAMERA_STREAMER -> "http://$host:$port/webcam/stream"
         }
     }
 }
