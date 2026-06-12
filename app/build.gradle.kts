@@ -30,14 +30,14 @@ fun signingValue(key: String, env: String): String? =
 
 android {
     namespace = "com.klipperremote.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.klipperremote.app"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 31
-        versionName = "1.0.30"
+        targetSdk = 35
+        versionCode = 32
+        versionName = "1.0.31"
     }
 
     signingConfigs {

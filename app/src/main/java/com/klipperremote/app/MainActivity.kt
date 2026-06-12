@@ -4,19 +4,24 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.graphics.Color
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +58,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // App ist fest im Dunkel-Theme -> Systemleisten transparent mit hellen
+        // Icons erzwingen, unabhaengig vom Hell-/Dunkelmodus des Systems.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
+        )
         setContent {
             KlipperRemoteTheme {
                 val viewModel: MainViewModel = hiltViewModel()
@@ -83,6 +94,7 @@ class MainActivity : ComponentActivity() {
                     progress = uiState.printProgress,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
+                        .windowInsetsPadding(WindowInsets.statusBars)
                         .zIndex(10f)
                 )
                 NavHost(
@@ -158,22 +170,16 @@ private fun StartupPermissionGate() {
         )
     }
 
-    // Datei-Zugriff erst nach der Benachrichtigungs-Abfrage anzeigen, damit sich
-    // die Dialoge nicht überlagern.
-    var showStoragePermission by remember { mutableStateOf(false) }
-
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
         showNotificationRationale = false
-        if (needsFileAccessRequest(context)) showStoragePermission = true
     }
 
     if (showNotificationRationale) {
         AlertDialog(
             onDismissRequest = {
                 showNotificationRationale = false
-                if (needsFileAccessRequest(context)) showStoragePermission = true
             },
             title = { Text("Benachrichtigungen erlauben?") },
             text = {
@@ -192,109 +198,10 @@ private fun StartupPermissionGate() {
             dismissButton = {
                 TextButton(onClick = {
                     showNotificationRationale = false
-                    if (needsFileAccessRequest(context)) showStoragePermission = true
                 }) {
                     Text("Ablehnen")
                 }
             }
         )
     }
-
-    // Datei-Zugriff direkt beim Start abfragen, falls die Benachrichtigung nicht
-    // (mehr) abgefragt werden muss.
-    LaunchedEffect(Unit) {
-        if (!showNotificationRationale && needsFileAccessRequest(context)) {
-            showStoragePermission = true
-        }
-    }
-
-    if (showStoragePermission) {
-        FileAccessGate(onDone = { showStoragePermission = false })
-    }
-}
-
-/**
- * Ob der Nutzer noch nach Datei-Zugriff gefragt werden sollte. Ab Android 11 (R)
- * gilt das als erfüllt, wenn der volle Zugriff (MANAGE_EXTERNAL_STORAGE) erteilt ist;
- * darunter, wenn die Lese-Berechtigung bereits vorliegt.
- */
-private fun needsFileAccessRequest(context: android.content.Context): Boolean {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        !android.os.Environment.isExternalStorageManager()
-    } else {
-        ContextCompat.checkSelfPermission(
-            context, Manifest.permission.READ_EXTERNAL_STORAGE
-        ) != PackageManager.PERMISSION_GRANTED
-    }
-}
-
-/**
- * Fragt den Datei-Zugriff ab. Der Nutzer kann zwischen vollem Zugriff
- * (MANAGE_EXTERNAL_STORAGE über die System-Einstellungen) und eingeschränktem
- * Zugriff (Lese-Berechtigung bzw. nur die System-Dateiauswahl) wählen.
- */
-@androidx.compose.runtime.Composable
-private fun FileAccessGate(onDone: () -> Unit) {
-    val context = LocalContext.current
-    var visible by remember { mutableStateOf(true) }
-
-    val readLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) {
-        visible = false
-        onDone()
-    }
-
-    if (!visible) return
-
-    AlertDialog(
-        onDismissRequest = { visible = false; onDone() },
-        title = { Text("Datei-Zugriff erlauben?") },
-        text = {
-            Text(
-                "KlipperRemote kann Konfigurationsdateien hochladen und Backups " +
-                    "wiederherstellen. Erlaube vollen Zugriff auf alle Dateien oder beschränke " +
-                    "den Zugriff auf einzeln ausgewählte Dateien."
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                visible = false
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    runCatching {
-                        val intent = android.content.Intent(
-                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                            android.net.Uri.parse("package:${context.packageName}")
-                        )
-                        context.startActivity(intent)
-                    }.onFailure {
-                        runCatching {
-                            context.startActivity(
-                                android.content.Intent(
-                                    android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
-                                )
-                            )
-                        }
-                    }
-                    onDone()
-                } else {
-                    readLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
-                }
-            }) {
-                Text("Voller Zugriff")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = {
-                visible = false
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                    readLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
-                } else {
-                    onDone()
-                }
-            }) {
-                Text("Eingeschränkt")
-            }
-        }
-    )
 }
