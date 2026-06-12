@@ -100,6 +100,7 @@ fun MachineConfigScreen(
     val uiState by viewModel.uiState.collectAsState()
     val isEditing = uiState.editingConfigPath != null
     var showRestartConfirm by remember { mutableStateOf(false) }
+    var showFirmwareRestartConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         if (uiState.configFiles.isEmpty()) viewModel.loadConfigFiles()
@@ -142,6 +143,13 @@ fun MachineConfigScreen(
                         IconButton(onClick = { viewModel.loadConfigFiles() }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Neu laden")
                         }
+                        IconButton(onClick = { showFirmwareRestartConfirm = true }) {
+                            Icon(
+                                Icons.Default.RestartAlt,
+                                contentDescription = "Firmware neu starten",
+                                tint = Color(0xFFFF9800)
+                            )
+                        }
                         IconButton(onClick = { showRestartConfirm = true }) {
                             Icon(
                                 Icons.Default.RestartAlt,
@@ -155,6 +163,41 @@ fun MachineConfigScreen(
             )
         }
     ) { padding ->
+        if (showFirmwareRestartConfirm) {
+            AlertDialog(
+                onDismissRequest = { showFirmwareRestartConfirm = false },
+                containerColor = Color(0xFF1E1E1E),
+                icon = {
+                    Icon(Icons.Default.RestartAlt, contentDescription = null, tint = Color(0xFFFF9800))
+                },
+                title = {
+                    Text("Firmware neu starten?", color = Color(0xFFEEEEEE), fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Text(
+                        "Nur die Klipper-Firmware wird neu gestartet. Laufende Drucke werden abgebrochen.",
+                        color = Color(0xFFAAAAAA)
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showFirmwareRestartConfirm = false
+                            viewModel.firmwareRestart()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text("Neu starten", color = Color.Black)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showFirmwareRestartConfirm = false }) {
+                        Text("Abbrechen", color = Color(0xFF888888))
+                    }
+                }
+            )
+        }
+
         if (showRestartConfirm) {
             AlertDialog(
                 onDismissRequest = { showRestartConfirm = false },

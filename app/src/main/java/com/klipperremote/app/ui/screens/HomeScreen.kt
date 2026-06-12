@@ -5,6 +5,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.background
@@ -66,6 +69,7 @@ fun HomeScreen(
     var showGcodeFileBrowser by remember { mutableStateOf(false) }
     var gcodeConfirmFile by remember { mutableStateOf<String?>(null) }
     var showTuningDialog by remember { mutableStateOf(false) }
+    var showPauseConfirm by remember { mutableStateOf(false) }
 
     val powerDevices = uiState.powerDevices
     val isPowerOn = powerDevices.any { it.status == "on" }
@@ -79,7 +83,7 @@ fun HomeScreen(
                 onOpenWebcamConfig = { showWebcamSettings = true },
                 onNavigateToMachine = onNavigateToMachine,
                 onStartPrint = { showGcodeFileBrowser = true },
-                onPausePrint = { viewModel.pausePrint() },
+                onPausePrint = { showPauseConfirm = true },
                 onCancelPrint = { viewModel.cancelPrint() },
                 onNavigateToCrashLog = onNavigateToCrashLog,
                 onCoolDown = { viewModel.coolDown() }
@@ -304,7 +308,7 @@ fun HomeScreen(
                             temperatures = uiState.temperatures,
                             position = uiState.position,
                             printerState = uiState.printerState,
-                            onPausePrint = { viewModel.pausePrint() },
+                            onPausePrint = { showPauseConfirm = true },
                             onResumePrint = { viewModel.resumePrint() },
                             onSaveSnapshot = { viewModel.saveWebcamSnapshot(ctx) }
                         )
@@ -409,6 +413,42 @@ fun HomeScreen(
             devices = powerDevices,
             onToggle = { name, on -> viewModel.togglePowerDevice(name, on) },
             onDismiss = { showPowerDialog = false }
+        )
+    }
+
+    // Pause-Bestätigungs-Dialog
+    if (showPauseConfirm) {
+        AlertDialog(
+            onDismissRequest = { showPauseConfirm = false },
+            containerColor = Color(0xFF1E1E1E),
+            icon = {
+                Icon(Icons.Default.Pause, contentDescription = null, tint = Color(0xFFFF9800))
+            },
+            title = {
+                Text("Druck pausieren?", color = OnSurface, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Möchtest du den laufenden Druck wirklich pausieren?",
+                    color = OnSurfaceDim
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showPauseConfirm = false
+                        viewModel.pausePrint()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                ) {
+                    Text("Pausieren", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPauseConfirm = false }) {
+                    Text("Abbrechen", color = OnSurfaceDim)
+                }
+            }
         )
     }
 
@@ -724,6 +764,24 @@ fun WebcamCard(
                 val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType, apiKey) {
                     webcamConfig.resolveStreamUrl(host, port, apiKey)
                 }
+                val lifecycleOwner = LocalLifecycleOwner.current
+                var webViewRef by remember { mutableStateOf<WebView?>(null) }
+
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        when (event) {
+                            Lifecycle.Event.ON_PAUSE -> webViewRef?.onPause()
+                            Lifecycle.Event.ON_RESUME -> webViewRef?.onResume()
+                            else -> {}
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose {
+                        lifecycleOwner.lifecycle.removeObserver(observer)
+                        webViewRef?.onPause()
+                    }
+                }
+
                 Box {
                     key(streamUrl) {
                         AndroidView(
@@ -734,7 +792,7 @@ fun WebcamCard(
                                     settings.useWideViewPort = true
                                     webViewClient = WebViewClient()
                                     loadUrl(streamUrl)
-                                }
+                                }.also { webViewRef = it }
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -831,6 +889,24 @@ fun WebcamFullscreenDialog(
             dismissOnClickOutside = false
         )
     ) {
+        val fsLifecycleOwner = LocalLifecycleOwner.current
+        var fsWebViewRef by remember { mutableStateOf<WebView?>(null) }
+
+        DisposableEffect(fsLifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_PAUSE -> fsWebViewRef?.onPause()
+                    Lifecycle.Event.ON_RESUME -> fsWebViewRef?.onResume()
+                    else -> {}
+                }
+            }
+            fsLifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                fsLifecycleOwner.lifecycle.removeObserver(observer)
+                fsWebViewRef?.onPause()
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -845,7 +921,7 @@ fun WebcamFullscreenDialog(
                             settings.useWideViewPort = true
                             webViewClient = WebViewClient()
                             loadUrl(streamUrl)
-                        }
+                        }.also { fsWebViewRef = it }
                     },
                     modifier = Modifier.fillMaxSize()
                 )
@@ -2315,9 +2391,10 @@ private fun TuningAdjustRow(
                     lineHeight = 24.sp
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 val canDec = value > min
                 val canInc = value < max
+                // −5
                 Box(
                     modifier = Modifier
                         .size(36.dp)
@@ -2329,10 +2406,43 @@ private fun TuningAdjustRow(
                     Text(
                         "−5",
                         color = if (canDec) OnSurface else OnSurfaceDim.copy(alpha = 0.3f),
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
+                // −1
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (canDec) Color(0xFF3A3A3A) else Color(0xFF252525))
+                        .clickable(enabled = canDec) { onSet((value - 1).coerceAtLeast(min)) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "−1",
+                        color = if (canDec) OnSurface else OnSurfaceDim.copy(alpha = 0.3f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                // +1
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (canInc) Color(0xFF3A3A3A) else Color(0xFF252525))
+                        .clickable(enabled = canInc) { onSet((value + 1).coerceAtMost(max)) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "+1",
+                        color = if (canInc) OnSurface else OnSurfaceDim.copy(alpha = 0.3f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                // +5
                 Box(
                     modifier = Modifier
                         .size(36.dp)
@@ -2344,7 +2454,7 @@ private fun TuningAdjustRow(
                     Text(
                         "+5",
                         color = if (canInc) OnSurface else OnSurfaceDim.copy(alpha = 0.3f),
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }

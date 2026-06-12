@@ -268,6 +268,18 @@ class KlipperClient(private val config: KlipperConfig) {
         }
     }
 
+    // Klipper-Firmware neu starten (Moonraker: POST /printer/restart)
+    suspend fun firmwareRestart(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url("$baseUrl/printer/restart")
+                .post("".toRequestBody(null))
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        }
+    }
+
     // Klipper-Host neu starten (Moonraker: POST /machine/reboot)
     suspend fun restartHost(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {

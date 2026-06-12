@@ -705,6 +705,20 @@ class MainViewModel @Inject constructor(
         _uiState.update { it.copy(editingConfigPath = null, editingConfigContent = "", editingConfigError = null, editingConfigSaved = false) }
     }
 
+    fun firmwareRestart() {
+        queue.enqueueHigh {
+            repository.firmwareRestart()
+                .onSuccess {
+                    _uiState.update { it.copy(gcodeResult = "Firmware-Neustart ausgelöst…") }
+                    delay(3000L)
+                    _uiState.update { it.copy(gcodeResult = null) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(error = "Firmware-Neustart fehlgeschlagen: ${e.message}") }
+                }
+        }
+    }
+
     fun restartHost() {
         queue.enqueueHigh {
             repository.restartHost()
