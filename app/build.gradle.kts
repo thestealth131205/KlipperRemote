@@ -1,5 +1,15 @@
 import java.util.Properties
 
+// Entwickler-/Herausgeber-Identität (für Support, Play Console & Play Protect):
+//   Entwickler:    Dennis Bassy
+//   Google-Konto:  thestealth131205@googlemail.com
+//   Support-Mail:  info@letheapp.de
+// Hinweis: Die Play-Protect-Warnung "App von einem unbekannten Entwickler" beim
+// Sideload einer APK lässt sich NICHT über die build.gradle entfernen. Sie
+// verschwindet nur, wenn die App über die Google Play Console mit genau diesem
+// Konto (thestealth131205@googlemail.com) veröffentlicht und mit dem hier
+// hinterlegten Release-Keystore signiert wird.
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -26,8 +36,8 @@ android {
         applicationId = "com.klipperremote.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 30
-        versionName = "1.0.29"
+        versionCode = 31
+        versionName = "1.0.30"
     }
 
     signingConfigs {

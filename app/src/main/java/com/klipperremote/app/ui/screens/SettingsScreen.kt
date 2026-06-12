@@ -8,6 +8,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
@@ -374,12 +376,76 @@ fun SettingsScreen(
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 15.sp
                 )
+                // Versionsnummer wird automatisch aus der Build-Konfiguration ausgelesen.
+                val appVersion = remember {
+                    runCatching {
+                        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                    }.getOrNull() ?: ""
+                }
+                if (appVersion.isNotEmpty()) {
+                    Text(
+                        text = "Version $appVersion",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
                 Text(
-                    text = "von TheStealth",
+                    text = "von Dennis Bassy",
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
                 )
+                Spacer(Modifier.height(4.dp))
+                TextButton(
+                    onClick = {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_SENDTO,
+                            android.net.Uri.parse("mailto:info@letheapp.de")
+                        ).apply {
+                            putExtra(
+                                android.content.Intent.EXTRA_SUBJECT,
+                                "KlipperRemote Support (Version $appVersion)"
+                            )
+                        }
+                        runCatching { context.startActivity(intent) }
+                    }
+                ) {
+                    Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("info@letheapp.de", fontSize = 14.sp)
+                }
+                TextButton(
+                    onClick = {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_SENDTO,
+                            android.net.Uri.parse("mailto:support@letheapp.de")
+                        ).apply {
+                            putExtra(
+                                android.content.Intent.EXTRA_SUBJECT,
+                                "KlipperRemote Support (Version $appVersion)"
+                            )
+                        }
+                        runCatching { context.startActivity(intent) }
+                    }
+                ) {
+                    Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("support@letheapp.de", fontSize = 14.sp)
+                }
+                TextButton(
+                    onClick = {
+                        val intent = android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://letheapp.de/datenschutz-klipperremote.html")
+                        )
+                        runCatching { context.startActivity(intent) }
+                    }
+                ) {
+                    Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Datenschutzerklärung", fontSize = 14.sp)
+                }
             }
         }
     }

@@ -46,25 +46,33 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
-      - name: Build signed release APK
+      - name: Build signed release APK & AAB
         env:
           KEYSTORE_FILE: ${{ env.KEYSTORE_FILE }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease bundleRelease
 
-      - name: Rename APK
+      - name: Rename APK & AAB
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk \
              "dist/KlipperRemote-${{ steps.version.outputs.version }}.apk"
+          cp app/build/outputs/bundle/release/app-release.aab \
+             "dist/KlipperRemote-${{ steps.version.outputs.version }}.aab"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KlipperRemote-release
+          name: KlipperRemote-release-apk
           path: dist/*.apk
+
+      - name: Upload AAB artifact (Play Store)
+        uses: actions/upload-artifact@v4
+        with:
+          name: KlipperRemote-release-aab
+          path: dist/*.aab
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -77,7 +85,11 @@ jobs:
             - Version: `${{ steps.version.outputs.version }}`
             - Build: `${{ github.run_number }}`
             - Commit: ${{ github.sha }}
-          files: dist/*.apk
+
+            Enthält die signierte APK (Sideload) und das AAB-Bundle für die Google Play Console.
+          files: |
+            dist/*.apk
+            dist/*.aab
           draft: false
           prerelease: false
         env:
