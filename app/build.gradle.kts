@@ -36,8 +36,8 @@ android {
         applicationId = "com.klipperremote.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 33
-        versionName = "1.0.32"
+        versionCode = 34
+        versionName = "1.0.33"
     }
 
     signingConfigs {
@@ -71,7 +71,22 @@ android {
 
     kotlinOptions { jvmTarget = "17" }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("sideload") {
+            dimension = "distribution"
+            buildConfigField("Boolean", "LICENSE_CHECK_ENABLED", "true")
+        }
+        create("playstore") {
+            dimension = "distribution"
+            buildConfigField("Boolean", "LICENSE_CHECK_ENABLED", "false")
+        }
+    }
 
     composeOptions { kotlinCompilerExtensionVersion = "1.5.13" }
 }

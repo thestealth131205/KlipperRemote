@@ -41,6 +41,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.klipperremote.app.BuildConfig
 import com.klipperremote.app.ui.screens.CrashLogScreen
 import com.klipperremote.app.ui.screens.GCodeViewerScreen
 import com.klipperremote.app.ui.screens.DriverSettingsScreen
@@ -89,6 +90,7 @@ class MainActivity : ComponentActivity() {
                 // Beim App-Start Berechtigungen prüfen und den Nutzer fragen
                 StartupPermissionGate()
 
+                val mainContent: @Composable () -> Unit = {
                 Box(modifier = Modifier.fillMaxSize()) {
                 // Schwebender Fortschrittsbalken – liegt über allem außer Dialogen/Overlays
                 PrintProgressBar(
@@ -146,6 +148,13 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 } // Box
+                } // mainContent lambda
+
+                if (BuildConfig.LICENSE_CHECK_ENABLED) {
+                    LicenseCheckOverlay { mainContent() }
+                } else {
+                    mainContent()
+                }
             }
         }
     }

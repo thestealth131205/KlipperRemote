@@ -52,14 +52,14 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleRelease bundleRelease
+        run: ./gradlew assembleSideloadRelease bundlePlaystoreRelease
 
       - name: Rename APK & AAB
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk \
+          cp app/build/outputs/apk/sideload/release/app-sideload-release.apk \
              "dist/KlipperRemote-${{ steps.version.outputs.version }}.apk"
-          cp app/build/outputs/bundle/release/app-release.aab \
+          cp app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab \
              "dist/KlipperRemote-${{ steps.version.outputs.version }}.aab"
 
       - name: Upload APK artifact
