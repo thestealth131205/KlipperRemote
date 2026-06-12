@@ -33,3 +33,6 @@ Thumbs.db
 
 # ── Local slicer engine build workspace — NEVER push ────────
 slicer-engine/
+
+# Lizenzdatei mit E-Mail-Adressen — NICHT versionieren
+klipper_licenses.txt
