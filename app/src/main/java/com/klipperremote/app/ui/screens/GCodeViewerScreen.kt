@@ -202,7 +202,7 @@ fun GCodeViewerScreen(
                                 .padding(horizontal = 8.dp, vertical = 5.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
-                            LegendItem(color = Color(0xFFFFD700), label = "Druck")
+                            LegendItem(color = Color(0xFFFFFF00), label = "Druck")
                             LegendItem(color = Color(0xFF4CAF50), label = "Infill")
                             LegendItem(color = Color(0xFFFF4081), label = "Leerfahrt")
                             LegendItem(color = Color(0xFFFF9800), label = "Stütze")
@@ -270,7 +270,7 @@ private fun LayerCanvas(
     bedHeight: Float,
     modifier: Modifier = Modifier
 ) {
-    val colorPrint   = Color(0xFFFFD700)  // gelb  – Druckfahrten
+    val colorPrint   = Color(0xFFFFFF00)  // gelb  – Druckfahrten
     val colorInfill  = Color(0xFF4CAF50)  // grün  – Infill
     val colorTravel  = Color(0xFFFF4081)  // pink  – Leerfahrten
     val colorSupport = Color(0xFFFF9800)  // orange – Stützen

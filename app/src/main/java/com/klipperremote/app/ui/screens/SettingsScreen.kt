@@ -1,11 +1,14 @@
 package com.klipperremote.app.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Visibility
@@ -46,6 +49,25 @@ fun SettingsScreen(
 
     // Verbindungs-Backup: hält den .bck-Inhalt + Dateinamen, solange der Dialog offen ist.
     var backup by remember { mutableStateOf<Pair<String, String>?>(null) }
+
+    // Wiederherstellen: System-Dateiauswahl für eine .bck-Datei, dann Einstellungen übernehmen.
+    val restoreLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val restored = restoreConnectionBackup(context, uri)
+            if (restored != null) {
+                viewModel.saveConfig(restored)
+                android.widget.Toast.makeText(
+                    context, "Verbindungseinstellungen wiederhergestellt", android.widget.Toast.LENGTH_LONG
+                ).show()
+            } else {
+                android.widget.Toast.makeText(
+                    context, "Ungültige oder beschädigte Backup-Datei", android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
 
     var host by remember(config.host) { mutableStateOf(config.host) }
     var port by remember(config.port) { mutableStateOf(config.port.toString()) }
@@ -323,6 +345,16 @@ fun SettingsScreen(
                 Text("Verbindungseinstellungen sichern", fontSize = 15.sp)
             }
 
+            // Wiederherstellen aus einer zuvor gesicherten .bck-Datei.
+            OutlinedButton(
+                onClick = { restoreLauncher.launch("*/*") },
+                modifier = Modifier.fillMaxWidth().height(50.dp)
+            ) {
+                Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Verbindungseinstellungen wiederherstellen", fontSize = 15.sp)
+            }
+
             HorizontalDivider()
 
             // Über
@@ -464,3 +496,25 @@ private fun shareBackup(
         context.startActivity(chooser)
     }
 }
+
+// Liest eine ausgewählte .bck-Datei und stellt daraus die Verbindungseinstellungen
+// wieder her. Gibt null zurück, wenn die Datei nicht lesbar oder kein gültiges Backup ist.
+private fun restoreConnectionBackup(
+    context: android.content.Context,
+    uri: android.net.Uri
+): KlipperConfig? = runCatching {
+    val content = context.contentResolver.openInputStream(uri)?.use { input ->
+        input.readBytes().toString(Charsets.UTF_8)
+    } ?: return null
+    val json = JSONObject(content)
+    if (json.optString("type") != "klipperremote-connection-backup") return null
+    val host = json.optString("host", "")
+    if (host.isBlank()) return null
+    KlipperConfig(
+        host = host,
+        port = json.optInt("port", 7125),
+        username = "",
+        password = "",
+        apiKey = json.optString("apiKey", "")
+    )
+}.getOrNull()

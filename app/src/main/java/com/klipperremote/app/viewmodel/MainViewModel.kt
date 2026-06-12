@@ -80,6 +80,9 @@ data class MainUiState(
     // Konfig-Backup: Inhalte werden geladen, dann lokal speichern/teilen
     val configBackupLoading: Boolean = false,
     val pendingBackupFiles: List<BackupConfigFile>? = null,
+    // Konfig-Upload: vom Nutzer ausgewählte Dateien werden zum Drucker hochgeladen
+    val configUploadLoading: Boolean = false,
+    val configUploadResult: String? = null,
     // Crownest-Kameraerkennung
     val crownestCams: List<CrownestCam> = emptyList(),
     val crownestDetecting: Boolean = false,
@@ -565,10 +568,11 @@ class MainViewModel @Inject constructor(
     }
 
     fun moveToXyz(x: Float?, y: Float?, z: Float?, feedrate: Int) {
+        val loc = java.util.Locale.US
         val parts = mutableListOf<String>()
-        x?.let { parts.add("X%.3f".format(it)) }
-        y?.let { parts.add("Y%.3f".format(it)) }
-        z?.let { parts.add("Z%.3f".format(it)) }
+        x?.let { parts.add("X%.3f".format(loc, it)) }
+        y?.let { parts.add("Y%.3f".format(loc, it)) }
+        z?.let { parts.add("Z%.3f".format(loc, it)) }
         if (parts.isEmpty()) return
         parts.add("F$feedrate")
         sendGcode("G0 ${parts.joinToString(" ")}")
@@ -884,6 +888,35 @@ class MainViewModel @Inject constructor(
 
     fun clearPendingBackup() {
         _uiState.update { it.copy(pendingBackupFiles = null) }
+    }
+
+    // Lädt vom Nutzer (per System-Dateiauswahl) gewählte Dateien als
+    // Konfigurationsdateien zum Drucker hoch (Moonraker root=config) und
+    // aktualisiert anschließend die Dateiliste.
+    fun uploadConfigFiles(files: List<BackupConfigFile>) {
+        if (files.isEmpty()) return
+        _uiState.update { it.copy(configUploadLoading = true, editingConfigError = null) }
+        queue.enqueueHigh {
+            var uploaded = 0
+            var firstError: String? = null
+            for (f in files) {
+                repository.saveConfigFile(f.name, f.content)
+                    .onSuccess { uploaded++ }
+                    .onFailure { e -> if (firstError == null) firstError = e.message }
+            }
+            val msg = if (uploaded > 0) "$uploaded Datei(en) hochgeladen"
+                      else "Hochladen fehlgeschlagen: ${firstError ?: "unbekannter Fehler"}"
+            _uiState.update { it.copy(configUploadLoading = false, configUploadResult = msg) }
+            if (uploaded > 0) {
+                repository.listConfigFiles().onSuccess { list ->
+                    _uiState.update { it.copy(configFiles = list) }
+                }
+            }
+        }
+    }
+
+    fun clearConfigUploadResult() {
+        _uiState.update { it.copy(configUploadResult = null) }
     }
 
     fun firmwareRestart() {

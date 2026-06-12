@@ -1169,7 +1169,7 @@ fun MacroPill(
                 if (isFavorite) {
                     Text(
                         text = "\u2605 ",
-                        color = Color(0xFFFFD700),
+                        color = Color(0xFFFFFF00),
                         fontSize = 11.sp
                     )
                 }
@@ -1195,7 +1195,7 @@ fun MacroPill(
                     ) {
                         Text(
                             text = if (isFavorite) "\u2605" else "\u2606",
-                            color = Color(0xFFFFD700),
+                            color = Color(0xFFFFFF00),
                             fontSize = 16.sp
                         )
                         Text(
@@ -1516,10 +1516,10 @@ fun MoveToXyzDialog(
         confirmButton = {
             TextButton(onClick = {
                 onConfirm(
-                    xInput.toFloatOrNull(),
-                    yInput.toFloatOrNull(),
-                    zInput.toFloatOrNull(),
-                    feedInput.toIntOrNull() ?: 3000
+                    xInput.replace(',', '.').trim().toFloatOrNull(),
+                    yInput.replace(',', '.').trim().toFloatOrNull(),
+                    zInput.replace(',', '.').trim().toFloatOrNull(),
+                    feedInput.trim().toIntOrNull() ?: 3000
                 )
             }) {
                 Text("Fahren", color = AccentYellow, fontWeight = FontWeight.Bold)

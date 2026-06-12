@@ -42,8 +42,8 @@ fun DriverSettingsScreen(
     val holdFields = remember { mutableStateMapOf<String, String>() }
     LaunchedEffect(uiState.driverSettings) {
         uiState.driverSettings.axes.forEach { axis ->
-            runFields[axis.stepperName] = axis.runCurrent?.let { "%.2f".format(it) } ?: ""
-            holdFields[axis.stepperName] = axis.holdCurrent?.let { "%.2f".format(it) } ?: ""
+            runFields[axis.stepperName] = axis.runCurrent?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: ""
+            holdFields[axis.stepperName] = axis.holdCurrent?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: ""
         }
     }
 
@@ -199,7 +199,7 @@ private fun AxisDriverCard(
 
         Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
             InfoValue("Microsteps", axis.microsteps?.toString() ?: "–")
-            InfoValue("Rotation-Distance", axis.rotationDistance?.let { "%.3f mm".format(it) } ?: "–")
+            InfoValue("Rotation-Distance", axis.rotationDistance?.let { String.format(java.util.Locale.US, "%.3f mm", it) } ?: "–")
         }
     }
 }

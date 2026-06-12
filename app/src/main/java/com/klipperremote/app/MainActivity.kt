@@ -16,6 +16,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -136,7 +137,8 @@ class MainActivity : ComponentActivity() {
 /**
  * Prüft beim App-Start die benötigten Laufzeit-Berechtigungen und fragt den Nutzer,
  * ob er sie zulassen möchte. Vor der System-Abfrage wird ein erklärender Dialog gezeigt,
- * sodass der Nutzer bewusst zulassen oder ablehnen kann.
+ * sodass der Nutzer bewusst zulassen oder ablehnen kann. Die Abfragen laufen
+ * nacheinander: zuerst Benachrichtigungen, danach der Datei-Zugriff.
  */
 @androidx.compose.runtime.Composable
 private fun StartupPermissionGate() {
@@ -146,7 +148,7 @@ private fun StartupPermissionGate() {
     val needsNotificationPermission =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
-    var showRationale by remember {
+    var showNotificationRationale by remember {
         mutableStateOf(
             needsNotificationPermission &&
                 ContextCompat.checkSelfPermission(
@@ -156,13 +158,23 @@ private fun StartupPermissionGate() {
         )
     }
 
+    // Datei-Zugriff erst nach der Benachrichtigungs-Abfrage anzeigen, damit sich
+    // die Dialoge nicht überlagern.
+    var showStoragePermission by remember { mutableStateOf(false) }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* Ergebnis: vom Nutzer zugelassen oder abgelehnt – beides ist in Ordnung */ }
+    ) {
+        showNotificationRationale = false
+        if (needsFileAccessRequest(context)) showStoragePermission = true
+    }
 
-    if (showRationale) {
+    if (showNotificationRationale) {
         AlertDialog(
-            onDismissRequest = { showRationale = false },
+            onDismissRequest = {
+                showNotificationRationale = false
+                if (needsFileAccessRequest(context)) showStoragePermission = true
+            },
             title = { Text("Benachrichtigungen erlauben?") },
             text = {
                 Text(
@@ -172,17 +184,117 @@ private fun StartupPermissionGate() {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    showRationale = false
                     permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }) {
                     Text("Zulassen")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showRationale = false }) {
+                TextButton(onClick = {
+                    showNotificationRationale = false
+                    if (needsFileAccessRequest(context)) showStoragePermission = true
+                }) {
                     Text("Ablehnen")
                 }
             }
         )
     }
+
+    // Datei-Zugriff direkt beim Start abfragen, falls die Benachrichtigung nicht
+    // (mehr) abgefragt werden muss.
+    LaunchedEffect(Unit) {
+        if (!showNotificationRationale && needsFileAccessRequest(context)) {
+            showStoragePermission = true
+        }
+    }
+
+    if (showStoragePermission) {
+        FileAccessGate(onDone = { showStoragePermission = false })
+    }
+}
+
+/**
+ * Ob der Nutzer noch nach Datei-Zugriff gefragt werden sollte. Ab Android 11 (R)
+ * gilt das als erfüllt, wenn der volle Zugriff (MANAGE_EXTERNAL_STORAGE) erteilt ist;
+ * darunter, wenn die Lese-Berechtigung bereits vorliegt.
+ */
+private fun needsFileAccessRequest(context: android.content.Context): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        !android.os.Environment.isExternalStorageManager()
+    } else {
+        ContextCompat.checkSelfPermission(
+            context, Manifest.permission.READ_EXTERNAL_STORAGE
+        ) != PackageManager.PERMISSION_GRANTED
+    }
+}
+
+/**
+ * Fragt den Datei-Zugriff ab. Der Nutzer kann zwischen vollem Zugriff
+ * (MANAGE_EXTERNAL_STORAGE über die System-Einstellungen) und eingeschränktem
+ * Zugriff (Lese-Berechtigung bzw. nur die System-Dateiauswahl) wählen.
+ */
+@androidx.compose.runtime.Composable
+private fun FileAccessGate(onDone: () -> Unit) {
+    val context = LocalContext.current
+    var visible by remember { mutableStateOf(true) }
+
+    val readLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        visible = false
+        onDone()
+    }
+
+    if (!visible) return
+
+    AlertDialog(
+        onDismissRequest = { visible = false; onDone() },
+        title = { Text("Datei-Zugriff erlauben?") },
+        text = {
+            Text(
+                "KlipperRemote kann Konfigurationsdateien hochladen und Backups " +
+                    "wiederherstellen. Erlaube vollen Zugriff auf alle Dateien oder beschränke " +
+                    "den Zugriff auf einzeln ausgewählte Dateien."
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                visible = false
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    runCatching {
+                        val intent = android.content.Intent(
+                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            android.net.Uri.parse("package:${context.packageName}")
+                        )
+                        context.startActivity(intent)
+                    }.onFailure {
+                        runCatching {
+                            context.startActivity(
+                                android.content.Intent(
+                                    android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                                )
+                            )
+                        }
+                    }
+                    onDone()
+                } else {
+                    readLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+                }
+            }) {
+                Text("Voller Zugriff")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                visible = false
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                    readLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+                } else {
+                    onDone()
+                }
+            }) {
+                Text("Eingeschränkt")
+            }
+        }
+    )
 }

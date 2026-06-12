@@ -9,8 +9,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
@@ -18,6 +21,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -110,10 +114,30 @@ fun MachineConfigScreen(
     // Backup-Modus: Konfig-Dateien auswählen, um sie zu sichern
     var backupMode by remember { mutableStateOf(false) }
     val selectedPaths = remember { mutableStateListOf<String>() }
+    // Upload-Dialog: Dateien per System-Auswahl hochladen
+    var showUploadDialog by remember { mutableStateOf(false) }
 
     fun exitBackupMode() {
         backupMode = false
         selectedPaths.clear()
+    }
+
+    // System-Dateiauswahl für den Upload (mehrere Dateien möglich).
+    val uploadLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            val files = readPickedFiles(context, uris)
+            if (files.isNotEmpty()) viewModel.uploadConfigFiles(files)
+        }
+    }
+
+    // Ergebnis des Uploads als Toast anzeigen und danach zurücksetzen.
+    LaunchedEffect(uiState.configUploadResult) {
+        uiState.configUploadResult?.let { msg ->
+            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+            viewModel.clearConfigUploadResult()
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -179,6 +203,17 @@ fun MachineConfigScreen(
                             }
                         }
                     } else {
+                        IconButton(onClick = { showUploadDialog = true }) {
+                            if (uiState.configUploadLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color(0xFFE8FF00)
+                                )
+                            } else {
+                                Icon(Icons.Default.Add, contentDescription = "Datei hochladen", tint = Color(0xFFE8FF00))
+                            }
+                        }
                         IconButton(onClick = { backupMode = true }) {
                             Icon(Icons.Default.Save, contentDescription = "Konfiguration sichern", tint = Color(0xFFE8FF00))
                         }
@@ -275,6 +310,16 @@ fun MachineConfigScreen(
             )
         }
 
+        if (showUploadDialog) {
+            UploadFileDialog(
+                onDismiss = { showUploadDialog = false },
+                onPickFiles = {
+                    showUploadDialog = false
+                    uploadLauncher.launch("*/*")
+                }
+            )
+        }
+
         val backupFiles = uiState.pendingBackupFiles
         if (backupFiles != null) {
             BackupActionDialog(
@@ -324,6 +369,75 @@ fun MachineConfigScreen(
             )
         }
     }
+}
+
+// ── Upload: Datei-Auswahl-Dialog ────────────────────────────────────────────────
+
+@Composable
+private fun UploadFileDialog(
+    onDismiss: () -> Unit,
+    onPickFiles: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1E1E),
+        icon = { Icon(Icons.Default.UploadFile, contentDescription = null, tint = Color(0xFFE8FF00)) },
+        title = {
+            Text("Datei hochladen", color = Color(0xFFEEEEEE), fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column {
+                Text(
+                    "Wähle eine oder mehrere Dateien aus, um sie als Konfigurationsdatei zum Drucker hochzuladen. " +
+                        "Eine bestehende Datei mit gleichem Namen wird überschrieben.",
+                    color = Color(0xFFAAAAAA)
+                )
+                Spacer(Modifier.height(20.dp))
+                Button(
+                    onClick = onPickFiles,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8FF00))
+                ) {
+                    Icon(Icons.Default.UploadFile, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Dateien auswählen", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Abbrechen", color = Color(0xFF888888))
+            }
+        }
+    )
+}
+
+// Liest die per System-Auswahl gewählten Dateien (Inhalt + Anzeigename) ein.
+private fun readPickedFiles(
+    context: android.content.Context,
+    uris: List<android.net.Uri>
+): List<BackupConfigFile> {
+    val result = mutableListOf<BackupConfigFile>()
+    for (uri in uris) {
+        runCatching {
+            val name = queryDisplayName(context, uri) ?: "upload.cfg"
+            val content = context.contentResolver.openInputStream(uri)?.use { input ->
+                input.readBytes().toString(Charsets.UTF_8)
+            } ?: return@runCatching
+            result.add(BackupConfigFile(name, content))
+        }
+    }
+    return result
+}
+
+// Ermittelt den Anzeigenamen einer Content-Uri (DISPLAY_NAME), sonst den letzten Pfadteil.
+private fun queryDisplayName(context: android.content.Context, uri: android.net.Uri): String? {
+    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && cursor.moveToFirst()) return cursor.getString(idx)
+    }
+    return uri.lastPathSegment?.substringAfterLast('/')
 }
 
 // ── Backup: Speichern/Teilen-Dialog ─────────────────────────────────────────────

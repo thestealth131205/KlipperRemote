@@ -751,7 +751,7 @@ class KlipperClient(private val config: KlipperConfig) {
 
     // fan_generic Lüfter setzen: SET_FAN_SPEED FAN=<name> SPEED=<0.0-1.0>
     suspend fun setGenericFanSpeed(fanKeyName: String, percent: Int): Result<Unit> = withContext(Dispatchers.IO) {
-        val speed = "%.2f".format(percent / 100.0)
+        val speed = String.format(java.util.Locale.US, "%.2f", percent / 100.0)
         runCatching { sendGcodeInternal("SET_FAN_SPEED FAN=$fanKeyName SPEED=$speed") }
     }
 
