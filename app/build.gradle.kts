@@ -26,8 +26,8 @@ android {
         applicationId = "com.klipperremote.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 28
-        versionName = "1.0.27"
+        versionCode = 29
+        versionName = "1.0.28"
     }
 
     signingConfigs {
@@ -87,5 +87,9 @@ dependencies {
     implementation(libs.datastore)
     implementation(libs.gson)
     implementation(libs.coroutines.android)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.hls)
+    implementation(libs.media3.ui)
+    implementation(libs.webrtc)
     debugImplementation(libs.compose.ui.tooling)
 }

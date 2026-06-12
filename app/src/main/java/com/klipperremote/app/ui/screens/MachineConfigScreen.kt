@@ -12,16 +12,19 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -33,7 +36,9 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.klipperremote.app.data.model.BackupConfigFile
 import com.klipperremote.app.data.model.ConfigFile
 import com.klipperremote.app.viewmodel.MainViewModel
 
@@ -98,9 +103,18 @@ fun MachineConfigScreen(
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
     val isEditing = uiState.editingConfigPath != null
     var showRestartConfirm by remember { mutableStateOf(false) }
     var showFirmwareRestartConfirm by remember { mutableStateOf(false) }
+    // Backup-Modus: Konfig-Dateien auswählen, um sie zu sichern
+    var backupMode by remember { mutableStateOf(false) }
+    val selectedPaths = remember { mutableStateListOf<String>() }
+
+    fun exitBackupMode() {
+        backupMode = false
+        selectedPaths.clear()
+    }
 
     LaunchedEffect(Unit) {
         if (uiState.configFiles.isEmpty()) viewModel.loadConfigFiles()
@@ -112,16 +126,28 @@ fun MachineConfigScreen(
             TopAppBar(
                 title = {
                     Text(
-                        if (isEditing) uiState.editingConfigPath!!.substringAfterLast('/')
-                        else "Maschine",
+                        when {
+                            isEditing -> uiState.editingConfigPath!!.substringAfterLast('/')
+                            backupMode -> if (selectedPaths.isEmpty()) "Backup – auswählen"
+                                          else "${selectedPaths.size} ausgewählt"
+                            else -> "Maschine"
+                        },
                         fontWeight = FontWeight.Bold
                     )
                 },
                 navigationIcon = {
                     IconButton(onClick = {
-                        if (isEditing) viewModel.closeConfigEditor() else onNavigateBack()
+                        when {
+                            isEditing -> viewModel.closeConfigEditor()
+                            backupMode -> exitBackupMode()
+                            else -> onNavigateBack()
+                        }
                     }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Zurück")
+                        Icon(
+                            if (backupMode && !isEditing) Icons.Default.Close
+                            else Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Zurück"
+                        )
                     }
                 },
                 actions = {
@@ -139,7 +165,23 @@ fun MachineConfigScreen(
                                     Icon(Icons.Default.Save, contentDescription = "Speichern", tint = Color(0xFFE8FF00))
                             }
                         }
+                    } else if (backupMode) {
+                        // Haken erscheint, sobald mindestens eine Datei markiert ist
+                        if (uiState.configBackupLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp).padding(end = 8.dp),
+                                strokeWidth = 2.dp,
+                                color = Color(0xFFE8FF00)
+                            )
+                        } else if (selectedPaths.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.fetchConfigsForBackup(selectedPaths.toList()) }) {
+                                Icon(Icons.Default.Check, contentDescription = "Backup erstellen", tint = Color(0xFF4CAF50))
+                            }
+                        }
                     } else {
+                        IconButton(onClick = { backupMode = true }) {
+                            Icon(Icons.Default.Save, contentDescription = "Konfiguration sichern", tint = Color(0xFFE8FF00))
+                        }
                         IconButton(onClick = { viewModel.loadConfigFiles() }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Neu laden")
                         }
@@ -233,6 +275,30 @@ fun MachineConfigScreen(
             )
         }
 
+        val backupFiles = uiState.pendingBackupFiles
+        if (backupFiles != null) {
+            BackupActionDialog(
+                count = backupFiles.size,
+                onDismiss = { viewModel.clearPendingBackup() },
+                onSaveLocal = {
+                    val saved = saveConfigsToDownloads(context, backupFiles)
+                    android.widget.Toast.makeText(
+                        context,
+                        if (saved > 0) "$saved Datei(en) unter Downloads/KlipperRemote gespeichert"
+                        else "Speichern fehlgeschlagen",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    viewModel.clearPendingBackup()
+                    exitBackupMode()
+                },
+                onShare = {
+                    shareConfigs(context, backupFiles)
+                    viewModel.clearPendingBackup()
+                    exitBackupMode()
+                }
+            )
+        }
+
         if (isEditing) {
             ConfigEditor(
                 content = uiState.editingConfigContent,
@@ -244,10 +310,149 @@ fun MachineConfigScreen(
             ConfigFileList(
                 files = uiState.configFiles,
                 isLoading = uiState.configFilesLoading,
-                onFileClick = { viewModel.openConfigFile(it.path) },
+                backupMode = backupMode,
+                selectedPaths = selectedPaths,
+                onFileClick = { file ->
+                    if (backupMode) {
+                        if (selectedPaths.contains(file.path)) selectedPaths.remove(file.path)
+                        else selectedPaths.add(file.path)
+                    } else {
+                        viewModel.openConfigFile(file.path)
+                    }
+                },
                 modifier = Modifier.padding(padding)
             )
         }
+    }
+}
+
+// ── Backup: Speichern/Teilen-Dialog ─────────────────────────────────────────────
+
+@Composable
+private fun BackupActionDialog(
+    count: Int,
+    onDismiss: () -> Unit,
+    onSaveLocal: () -> Unit,
+    onShare: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1E1E),
+        icon = { Icon(Icons.Default.Save, contentDescription = null, tint = Color(0xFFE8FF00)) },
+        title = {
+            Text("Backup ($count)", color = Color(0xFFEEEEEE), fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column {
+                Text(
+                    "Möchtest du die ausgewählten Konfigurationsdateien lokal speichern oder teilen?",
+                    color = Color(0xFFAAAAAA)
+                )
+                Spacer(Modifier.height(20.dp))
+                Button(
+                    onClick = onSaveLocal,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8FF00))
+                ) {
+                    Icon(Icons.Default.Save, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Lokal speichern", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onShare,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null, tint = Color(0xFFE8FF00), modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Teilen…", color = Color(0xFFE8FF00))
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Abbrechen", color = Color(0xFF888888))
+            }
+        }
+    )
+}
+
+// ── Backup: Dateien lokal speichern / teilen ────────────────────────────────────
+
+// Schreibt die Backup-Dateien in den öffentlichen Downloads/KlipperRemote-Ordner.
+// Gibt die Anzahl erfolgreich gespeicherter Dateien zurück.
+private fun saveConfigsToDownloads(
+    context: android.content.Context,
+    files: List<BackupConfigFile>
+): Int {
+    var saved = 0
+    for (file in files) {
+        val bytes = file.content.toByteArray(Charsets.UTF_8)
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, file.name)
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain")
+                    put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download/KlipperRemote")
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = context.contentResolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                )
+                uri?.let {
+                    context.contentResolver.openOutputStream(it)?.use { out -> out.write(bytes) }
+                    values.clear()
+                    values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                    context.contentResolver.update(it, values, null, null)
+                    saved++
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS
+                )
+                val sub = java.io.File(dir, "KlipperRemote").apply { mkdirs() }
+                java.io.File(sub, file.name).writeBytes(bytes)
+                saved++
+            }
+        }
+    }
+    return saved
+}
+
+// Schreibt die Backup-Dateien in den Cache und öffnet das Android-Share-Sheet.
+private fun shareConfigs(
+    context: android.content.Context,
+    files: List<BackupConfigFile>
+) {
+    runCatching {
+        val cacheDir = java.io.File(context.cacheDir, "config_backups").apply {
+            mkdirs()
+            listFiles()?.forEach { it.delete() }
+        }
+        val uris = ArrayList<android.net.Uri>()
+        val authority = "${context.packageName}.fileprovider"
+        for (file in files) {
+            val out = java.io.File(cacheDir, file.name)
+            out.writeBytes(file.content.toByteArray(Charsets.UTF_8))
+            uris.add(FileProvider.getUriForFile(context, authority, out))
+        }
+        val intent = if (uris.size == 1) {
+            android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(android.content.Intent.EXTRA_STREAM, uris[0])
+            }
+        } else {
+            android.content.Intent(android.content.Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "text/plain"
+                putParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, uris)
+            }
+        }
+        intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val chooser = android.content.Intent.createChooser(intent, "Konfiguration teilen")
+        chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(chooser)
     }
 }
 
@@ -257,6 +462,8 @@ fun MachineConfigScreen(
 private fun ConfigFileList(
     files: List<ConfigFile>,
     isLoading: Boolean,
+    backupMode: Boolean,
+    selectedPaths: List<String>,
     onFileClick: (ConfigFile) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -290,7 +497,12 @@ private fun ConfigFileList(
                             }
                         }
                         items(dirFiles, key = { it.path }) { file ->
-                            ConfigFileItem(file = file, onClick = { onFileClick(file) })
+                            ConfigFileItem(
+                                file = file,
+                                backupMode = backupMode,
+                                selected = selectedPaths.contains(file.path),
+                                onClick = { onFileClick(file) }
+                            )
                         }
                     }
                 }
@@ -300,16 +512,34 @@ private fun ConfigFileList(
 }
 
 @Composable
-private fun ConfigFileItem(file: ConfigFile, onClick: () -> Unit) {
+private fun ConfigFileItem(
+    file: ConfigFile,
+    backupMode: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val bg = if (backupMode && selected) Color(0xFF2A2E14) else Color(0xFF1E1E1E)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp))
+            .background(bg, RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
+        if (backupMode) {
+            Checkbox(
+                checked = selected,
+                onCheckedChange = { onClick() },
+                colors = CheckboxDefaults.colors(
+                    checkedColor = Color(0xFFE8FF00),
+                    uncheckedColor = Color(0xFF888888),
+                    checkmarkColor = Color.Black
+                )
+            )
+            Spacer(Modifier.width(8.dp))
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 file.filename,
@@ -325,12 +555,14 @@ private fun ConfigFileItem(file: ConfigFile, onClick: () -> Unit) {
                 )
             }
         }
-        Icon(
-            Icons.Default.Edit,
-            contentDescription = null,
-            tint = Color(0xFF555555),
-            modifier = Modifier.size(18.dp)
-        )
+        if (!backupMode) {
+            Icon(
+                Icons.Default.Edit,
+                contentDescription = null,
+                tint = Color(0xFF555555),
+                modifier = Modifier.size(18.dp)
+            )
+        }
     }
 }
 

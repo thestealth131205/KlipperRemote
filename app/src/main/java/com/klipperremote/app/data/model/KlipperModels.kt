@@ -15,6 +15,24 @@ data class KlipperConfig(
     val apiKey: String = ""
 )
 
+/**
+ * Zentrale App-/Verbindungseinstellungen: steuern, wie viele Anfragen gleichzeitig
+ * laufen dürfen und in welchen Intervallen Daten abgerufen werden. Über die
+ * Sektion "App Konfiguration" in den Einstellungen veränderbar.
+ */
+data class AppConfig(
+    // Maximale Anzahl gleichzeitig laufender API-Anfragen.
+    val maxConcurrentConnections: Int = 1,
+    // Intervall der Temperaturabfrage (Vordergrund), in Sekunden.
+    val tempIntervalSec: Int = 2,
+    // Intervall der übrigen Hintergrunddaten (Vordergrund), in Sekunden.
+    val backgroundIntervalSec: Int = 4,
+    // Intervall der Power-Geräte-Abfrage (Vordergrund), in Sekunden.
+    val powerIntervalSec: Int = 15,
+    // Intervall der Benachrichtigungsabfrage, wenn die App im Hintergrund ist, in Sekunden.
+    val notifyIntervalSec: Int = 10
+)
+
 data class KlipperTemperaturesResponse(
     val result: TemperaturesResult?
 )
@@ -143,6 +161,12 @@ data class ConfigFile(
     val filename: String get() = path.substringAfterLast('/')
     val directory: String get() = path.substringBeforeLast('/', "")
 }
+
+// Eine zum Backup vorbereitete Konfigurationsdatei (Inhalt bereits geladen)
+data class BackupConfigFile(
+    val name: String,      // reiner Dateiname
+    val content: String    // Dateiinhalt
+)
 
 data class CrownestCam(
     val name: String,

@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import android.graphics.Bitmap
+import com.klipperremote.app.data.model.AppConfig
 import com.klipperremote.app.data.model.ConfigFile
 import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
@@ -53,6 +54,12 @@ class KlipperRepository @Inject constructor(
         val KEY_WEBCAM_ICE_USER = stringPreferencesKey("webcam_ice_username")
         val KEY_WEBCAM_ICE_PASS = stringPreferencesKey("webcam_ice_password")
         val KEY_WEBCAM_PORT = intPreferencesKey("webcam_port")
+
+        val KEY_APP_MAX_CONNECTIONS = intPreferencesKey("app_max_connections")
+        val KEY_APP_TEMP_INTERVAL = intPreferencesKey("app_temp_interval_sec")
+        val KEY_APP_BG_INTERVAL = intPreferencesKey("app_bg_interval_sec")
+        val KEY_APP_POWER_INTERVAL = intPreferencesKey("app_power_interval_sec")
+        val KEY_APP_NOTIFY_INTERVAL = intPreferencesKey("app_notify_interval_sec")
     }
 
     val configFlow: Flow<KlipperConfig> = dataStore.data.map { prefs ->
@@ -82,6 +89,26 @@ class KlipperRepository @Inject constructor(
             icePassword = prefs[KEY_WEBCAM_ICE_PASS] ?: "",
             webcamPort = prefs[KEY_WEBCAM_PORT] ?: 0
         )
+    }
+
+    val appConfigFlow: Flow<AppConfig> = dataStore.data.map { prefs ->
+        AppConfig(
+            maxConcurrentConnections = (prefs[KEY_APP_MAX_CONNECTIONS] ?: 1).coerceIn(1, 8),
+            tempIntervalSec = (prefs[KEY_APP_TEMP_INTERVAL] ?: 2).coerceIn(1, 60),
+            backgroundIntervalSec = (prefs[KEY_APP_BG_INTERVAL] ?: 4).coerceIn(1, 120),
+            powerIntervalSec = (prefs[KEY_APP_POWER_INTERVAL] ?: 15).coerceIn(1, 300),
+            notifyIntervalSec = (prefs[KEY_APP_NOTIFY_INTERVAL] ?: 10).coerceIn(5, 600)
+        )
+    }
+
+    suspend fun saveAppConfig(config: AppConfig) {
+        dataStore.edit { prefs ->
+            prefs[KEY_APP_MAX_CONNECTIONS] = config.maxConcurrentConnections.coerceIn(1, 8)
+            prefs[KEY_APP_TEMP_INTERVAL] = config.tempIntervalSec.coerceIn(1, 60)
+            prefs[KEY_APP_BG_INTERVAL] = config.backgroundIntervalSec.coerceIn(1, 120)
+            prefs[KEY_APP_POWER_INTERVAL] = config.powerIntervalSec.coerceIn(1, 300)
+            prefs[KEY_APP_NOTIFY_INTERVAL] = config.notifyIntervalSec.coerceIn(5, 600)
+        }
     }
 
     suspend fun saveConfig(config: KlipperConfig) {

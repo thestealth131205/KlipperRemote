@@ -3,6 +3,8 @@ package com.klipperremote.app.viewmodel
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.klipperremote.app.data.model.AppConfig
+import com.klipperremote.app.data.model.BackupConfigFile
 import com.klipperremote.app.data.model.ConfigFile
 import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
@@ -38,6 +40,7 @@ data class MainUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val config: KlipperConfig = KlipperConfig(),
+    val appConfig: AppConfig = AppConfig(),
     val webcamConfig: WebcamConfig = WebcamConfig(),
     val setTempSuccess: String? = null,
     val printerState: String = "offline",
@@ -49,6 +52,10 @@ data class MainUiState(
     val gcodeResult: String? = null,
     val powerDevices: List<PowerDevice> = emptyList(),
     val connectionFailed: Boolean = false,
+    // Wird true nach 3 aufeinanderfolgenden Verbindungsfehlern → Dialog anzeigen
+    val showConnectionFailedDialog: Boolean = false,
+    // true, solange nach "Abbrechen" keine Verbindungsversuche/Datenabfragen erfolgen dürfen
+    val connectionPaused: Boolean = false,
     // G-Code Viewer
     val gcodeViewerLayers: List<GCodeLayer> = emptyList(),
     val gcodeViewerLoading: Boolean = false,
@@ -70,6 +77,9 @@ data class MainUiState(
     val editingConfigSaving: Boolean = false,
     val editingConfigSaved: Boolean = false,
     val editingConfigError: String? = null,
+    // Konfig-Backup: Inhalte werden geladen, dann lokal speichern/teilen
+    val configBackupLoading: Boolean = false,
+    val pendingBackupFiles: List<BackupConfigFile>? = null,
     // Crownest-Kameraerkennung
     val crownestCams: List<CrownestCam> = emptyList(),
     val crownestDetecting: Boolean = false,
@@ -101,8 +111,42 @@ class MainViewModel @Inject constructor(
     /** Letzter bekannter Druckzustand – um den Start eines Drucks zu erkennen. */
     private var lastPrintingActive = false
 
-    /** Serialisierte Warteschlange für alle API-Anfragen. */
-    private val queue = ApiRequestQueue(viewModelScope)
+    /** Zähler aufeinanderfolgender Verbindungsfehler (für den Hinweisdialog). */
+    private var consecutiveFailures = 0
+
+    /**
+     * Wenn true, pausieren alle Polling-Schleifen – es werden keine Verbindungs-
+     * versuche bzw. Datenabfragen mehr ausgelöst. Wird nach "Abbrechen" gesetzt
+     * und erst beim Neustart der App oder beim Speichern von Verbindungs-
+     * einstellungen wieder aufgehoben.
+     */
+    @Volatile
+    private var connectionPaused = false
+
+    /**
+     * Ob die App im Vordergrund ist. Im Hintergrund werden nur noch die für die
+     * Benachrichtigung nötigen Daten und das nur alle 10 Sekunden abgefragt, um
+     * den Klipper-Rechner nicht dauerhaft zu belasten. Wird vom Activity-
+     * Lifecycle über [setAppForeground] gesetzt.
+     */
+    @Volatile
+    private var appInForeground = true
+
+    // ── Zentrale App-Konfiguration (Parallelität + Polling-Intervalle) ──────────
+    // Werden aus der gespeicherten AppConfig befüllt und von Queue/Polling gelesen.
+    @Volatile
+    private var maxConcurrentConnections = 1
+    @Volatile
+    private var tempIntervalMs = 2000L
+    @Volatile
+    private var backgroundIntervalMs = 4000L
+    @Volatile
+    private var powerIntervalMs = 15000L
+    @Volatile
+    private var notifyIntervalMs = 10000L
+
+    /** Priorisierte Warteschlange für alle API-Anfragen (Parallelität via AppConfig). */
+    private val queue = ApiRequestQueue(viewModelScope) { maxConcurrentConnections }
 
     init {
         viewModelScope.launch {
@@ -119,6 +163,13 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             repository.webcamConfigFlow.collect { webcamConfig ->
                 _uiState.update { it.copy(webcamConfig = webcamConfig) }
+            }
+        }
+        // App-Konfiguration (Parallelität + Intervalle) übernehmen.
+        viewModelScope.launch {
+            repository.appConfigFlow.collect { appConfig ->
+                applyAppConfig(appConfig)
+                _uiState.update { it.copy(appConfig = appConfig) }
             }
         }
         // Gecachte Power-Geräte sofort aus DataStore laden (ohne Netzwerk)
@@ -139,19 +190,20 @@ class MainViewModel @Inject constructor(
     }
 
     private fun startPolling() {
-        // Temperatur: alle 2 Sekunden, HIGH-Priorität
+        // Temperatur, HIGH-Priorität (nur im Vordergrund) – Intervall aus AppConfig
         viewModelScope.launch {
             while (true) {
-                queue.enqueueHigh { fetchTemperaturesInternal() }
-                delay(2000L)
+                if (!connectionPaused && appInForeground) queue.enqueueHigh { fetchTemperaturesInternal() }
+                delay(tempIntervalMs)
             }
         }
-        // Hintergrunddaten: alle 4 Sekunden, NORMAL-Priorität (sequenziell via Queue)
+        // Hintergrunddaten, NORMAL-Priorität (nur im Vordergrund) – Intervall aus AppConfig
         viewModelScope.launch {
-            queue.enqueueNormal { fetchPowerDevicesInternal() }
+            if (!connectionPaused && appInForeground) queue.enqueueNormal { fetchPowerDevicesInternal() }
             var bgCounter = 0
             while (true) {
-                delay(4000L)
+                delay(backgroundIntervalMs)
+                if (connectionPaused || !appInForeground) continue
                 bgCounter++
                 queue.enqueueNormal { fetchPrinterStatusInternal() }
                 queue.enqueueNormal { fetchPositionInternal() }
@@ -164,13 +216,87 @@ class MainViewModel @Inject constructor(
                 }
             }
         }
-        // Power-Geräte seltener aktualisieren
+        // Power-Geräte seltener aktualisieren (nur im Vordergrund) – Intervall aus AppConfig
         viewModelScope.launch {
             while (true) {
-                delay(15000L)
-                queue.enqueueNormal { fetchPowerDevicesInternal() }
+                delay(powerIntervalMs)
+                if (!connectionPaused && appInForeground) queue.enqueueNormal { fetchPowerDevicesInternal() }
             }
         }
+        // Hintergrund-Modus: nur die für die Benachrichtigung nötigen Daten –
+        // Intervall aus AppConfig. Schont den Klipper-Rechner, wenn die App nicht
+        // im Vordergrund ist (oder versehentlich offen bleibt).
+        viewModelScope.launch {
+            while (true) {
+                delay(notifyIntervalMs)
+                if (connectionPaused || appInForeground) continue
+                queue.enqueueNormal { fetchPrinterStatusInternal() }
+                queue.enqueueNormal { fetchPrintProgressInternal() }
+                queue.enqueueNormal { fetchPrintStatsInternal() }
+                queue.enqueueNormal { syncPrintNotification() }
+            }
+        }
+    }
+
+    /** Übernimmt die App-Konfiguration in die Laufzeit-Felder (Queue + Polling). */
+    private fun applyAppConfig(appConfig: AppConfig) {
+        maxConcurrentConnections = appConfig.maxConcurrentConnections.coerceAtLeast(1)
+        tempIntervalMs = appConfig.tempIntervalSec.coerceAtLeast(1) * 1000L
+        backgroundIntervalMs = appConfig.backgroundIntervalSec.coerceAtLeast(1) * 1000L
+        powerIntervalMs = appConfig.powerIntervalSec.coerceAtLeast(1) * 1000L
+        notifyIntervalMs = appConfig.notifyIntervalSec.coerceAtLeast(5) * 1000L
+    }
+
+    /**
+     * Wird vom Activity-Lifecycle aufgerufen. Im Hintergrund werden alle
+     * Vordergrund-Polling-Schleifen pausiert; es läuft nur noch die 10-Sekunden-
+     * Benachrichtigungsabfrage. Beim Zurückkehren in den Vordergrund werden
+     * sofort die wichtigsten Daten aktualisiert.
+     */
+    fun setAppForeground(inForeground: Boolean) {
+        val wasInForeground = appInForeground
+        appInForeground = inForeground
+        if (inForeground && !wasInForeground && !connectionPaused) {
+            fetchTemperatures()
+        }
+    }
+
+    /**
+     * Zentrale Auswertung des Verbindungsergebnisses. Erfolg setzt den Fehler-
+     * zähler zurück; nach 3 aufeinanderfolgenden Fehlern wird der Hinweisdialog
+     * angezeigt und das Polling pausiert, bis der Nutzer reagiert.
+     */
+    private fun reportConnectionResult(success: Boolean) {
+        if (success) {
+            consecutiveFailures = 0
+            _uiState.update { it.copy(connectionFailed = false) }
+        } else {
+            consecutiveFailures++
+            _uiState.update { it.copy(connectionFailed = true) }
+            if (consecutiveFailures >= 3 && !connectionPaused && !_uiState.value.showConnectionFailedDialog) {
+                // Polling anhalten, bis der Nutzer im Dialog entscheidet.
+                connectionPaused = true
+                _uiState.update { it.copy(showConnectionFailedDialog = true, connectionPaused = true) }
+            }
+        }
+    }
+
+    /** "Erneut versuchen": Zähler zurücksetzen, Polling fortsetzen. */
+    fun retryConnection() {
+        consecutiveFailures = 0
+        connectionPaused = false
+        _uiState.update { it.copy(showConnectionFailedDialog = false, connectionPaused = false) }
+        fetchTemperatures()
+    }
+
+    /**
+     * "Abbrechen": Dialog schließen und Verbindungsversuche/Datenabfragen
+     * unterbinden, bis die App neu gestartet oder die Verbindungseinstellungen
+     * gespeichert werden.
+     */
+    fun cancelConnection() {
+        connectionPaused = true
+        _uiState.update { it.copy(showConnectionFailedDialog = false, connectionPaused = true) }
     }
 
     fun fetchTemperatures() {
@@ -180,10 +306,11 @@ class MainViewModel @Inject constructor(
     private suspend fun fetchTemperaturesInternal() {
         repository.getTemperatures()
             .onSuccess { temps ->
-                _uiState.update { it.copy(temperatures = temps, isLoading = false, connectionFailed = false) }
+                _uiState.update { it.copy(temperatures = temps, isLoading = false) }
+                reportConnectionResult(success = true)
             }
             .onFailure {
-                _uiState.update { it.copy(connectionFailed = true) }
+                reportConnectionResult(success = false)
             }
     }
 
@@ -492,8 +619,21 @@ class MainViewModel @Inject constructor(
     }
 
     fun saveConfig(config: KlipperConfig) {
+        // Verbindungseinstellungen geändert → Pause aufheben und erneut versuchen.
+        consecutiveFailures = 0
+        connectionPaused = false
+        _uiState.update { it.copy(showConnectionFailedDialog = false, connectionPaused = false) }
         viewModelScope.launch {
             repository.saveConfig(config)
+        }
+    }
+
+    fun saveAppConfig(appConfig: AppConfig) {
+        // Sofort anwenden, damit Parallelität/Intervalle nicht erst nach dem
+        // nächsten Flow-Emit greifen, dann persistieren.
+        applyAppConfig(appConfig)
+        viewModelScope.launch {
+            repository.saveAppConfig(appConfig)
         }
     }
 
@@ -506,11 +646,12 @@ class MainViewModel @Inject constructor(
     private suspend fun fetchPowerDevicesInternal() {
         repository.getPowerDevices()
             .onSuccess { devices ->
-                _uiState.update { it.copy(powerDevices = devices, connectionFailed = false) }
+                _uiState.update { it.copy(powerDevices = devices) }
+                reportConnectionResult(success = true)
                 if (devices.isNotEmpty()) repository.saveCachedPowerDevices(devices)
             }
             .onFailure {
-                _uiState.update { it.copy(connectionFailed = true) }
+                reportConnectionResult(success = false)
             }
     }
 
@@ -714,6 +855,35 @@ class MainViewModel @Inject constructor(
 
     fun closeConfigEditor() {
         _uiState.update { it.copy(editingConfigPath = null, editingConfigContent = "", editingConfigError = null, editingConfigSaved = false) }
+    }
+
+    // Lädt die Inhalte der ausgewählten Konfig-Dateien für ein Backup.
+    // Ergebnis landet in pendingBackupFiles → UI zeigt dann Speichern/Teilen-Dialog.
+    fun fetchConfigsForBackup(paths: List<String>) {
+        if (paths.isEmpty()) return
+        _uiState.update { it.copy(configBackupLoading = true, editingConfigError = null) }
+        queue.enqueueNormal {
+            val results = mutableListOf<BackupConfigFile>()
+            var firstError: String? = null
+            for (path in paths) {
+                repository.readConfigFile(path)
+                    .onSuccess { content ->
+                        results.add(BackupConfigFile(path.substringAfterLast('/'), content))
+                    }
+                    .onFailure { e -> if (firstError == null) firstError = e.message }
+            }
+            if (results.isEmpty()) {
+                _uiState.update {
+                    it.copy(configBackupLoading = false, editingConfigError = firstError ?: "Backup fehlgeschlagen")
+                }
+            } else {
+                _uiState.update { it.copy(configBackupLoading = false, pendingBackupFiles = results) }
+            }
+        }
+    }
+
+    fun clearPendingBackup() {
+        _uiState.update { it.copy(pendingBackupFiles = null) }
     }
 
     fun firmwareRestart() {

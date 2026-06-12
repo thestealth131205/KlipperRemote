@@ -1,13 +1,8 @@
 package com.klipperremote.app.ui.screens
 
 import android.content.res.Configuration
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.background
@@ -41,7 +36,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
@@ -423,6 +417,43 @@ fun HomeScreen(
         )
     }
 
+    // Verbindungsfehler-Dialog (nach 3 aufeinanderfolgenden Fehlversuchen)
+    if (uiState.showConnectionFailedDialog) {
+        AlertDialog(
+            onDismissRequest = { /* nur über die Buttons schließbar */ },
+            properties = DialogProperties(
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false
+            ),
+            containerColor = Color(0xFF1E1E1E),
+            icon = {
+                Icon(Icons.Default.WifiOff, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            },
+            title = {
+                Text("Keine Verbindung", color = OnSurface, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Verbindung konnte nicht hergestellt werden.",
+                    color = OnSurfaceDim
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.retryConnection() },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentYellow)
+                ) {
+                    Text("Erneut versuchen", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelConnection() }) {
+                    Text("Abbrechen", color = OnSurfaceDim)
+                }
+            }
+        )
+    }
+
     // Pause-Bestätigungs-Dialog
     if (showPauseConfirm) {
         AlertDialog(
@@ -782,41 +813,21 @@ fun WebcamCard(
                 val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType, apiKey) {
                     webcamConfig.resolveStreamUrl(host, port, apiKey)
                 }
-                val lifecycleOwner = LocalLifecycleOwner.current
-                var webViewRef by remember { mutableStateOf<WebView?>(null) }
-
-                DisposableEffect(lifecycleOwner) {
-                    val observer = LifecycleEventObserver { _, event ->
-                        when (event) {
-                            Lifecycle.Event.ON_PAUSE -> webViewRef?.onPause()
-                            Lifecycle.Event.ON_RESUME -> webViewRef?.onResume()
-                            else -> {}
-                        }
-                    }
-                    lifecycleOwner.lifecycle.addObserver(observer)
-                    onDispose {
-                        lifecycleOwner.lifecycle.removeObserver(observer)
-                        webViewRef?.onPause()
-                    }
-                }
 
                 Box {
-                    key(streamUrl) {
-                        AndroidView(
-                            factory = { ctx ->
-                                WebView(ctx).apply {
-                                    settings.javaScriptEnabled = true
-                                    settings.loadWithOverviewMode = true
-                                    settings.useWideViewPort = true
-                                    webViewClient = WebViewClient()
-                                    loadUrl(streamUrl)
-                                }.also { webViewRef = it }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(220.dp)
-                        )
-                    }
+                    WebcamPlayer(
+                        streamUrl = streamUrl,
+                        streamType = webcamConfig.streamType,
+                        flipH = webcamConfig.flipH,
+                        flipV = webcamConfig.flipV,
+                        rotate = webcamConfig.rotate,
+                        stunServer = webcamConfig.stunServer,
+                        iceUsername = webcamConfig.iceUsername,
+                        icePassword = webcamConfig.icePassword,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(220.dp)
+                    )
                     // Zoom-Button unten rechts
                     Box(
                         modifier = Modifier
@@ -870,6 +881,7 @@ fun WebcamCard(
         }
         WebcamFullscreenDialog(
             streamUrl = streamUrl,
+            webcamConfig = webcamConfig,
             printProgress = printProgress,
             printSpeedMmPerSec = printSpeedMmPerSec,
             temperatures = temperatures,
@@ -886,6 +898,7 @@ fun WebcamCard(
 @Composable
 fun WebcamFullscreenDialog(
     streamUrl: String,
+    webcamConfig: WebcamConfig,
     printProgress: Float?,
     printSpeedMmPerSec: Float?,
     temperatures: List<TemperatureInfo>,
@@ -907,43 +920,22 @@ fun WebcamFullscreenDialog(
             dismissOnClickOutside = false
         )
     ) {
-        val fsLifecycleOwner = LocalLifecycleOwner.current
-        var fsWebViewRef by remember { mutableStateOf<WebView?>(null) }
-
-        DisposableEffect(fsLifecycleOwner) {
-            val observer = LifecycleEventObserver { _, event ->
-                when (event) {
-                    Lifecycle.Event.ON_PAUSE -> fsWebViewRef?.onPause()
-                    Lifecycle.Event.ON_RESUME -> fsWebViewRef?.onResume()
-                    else -> {}
-                }
-            }
-            fsLifecycleOwner.lifecycle.addObserver(observer)
-            onDispose {
-                fsLifecycleOwner.lifecycle.removeObserver(observer)
-                fsWebViewRef?.onPause()
-            }
-        }
-
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            key(streamUrl) {
-                AndroidView(
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            settings.javaScriptEnabled = true
-                            settings.loadWithOverviewMode = true
-                            settings.useWideViewPort = true
-                            webViewClient = WebViewClient()
-                            loadUrl(streamUrl)
-                        }.also { fsWebViewRef = it }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+            WebcamPlayer(
+                streamUrl = streamUrl,
+                streamType = webcamConfig.streamType,
+                flipH = webcamConfig.flipH,
+                flipV = webcamConfig.flipV,
+                rotate = webcamConfig.rotate,
+                stunServer = webcamConfig.stunServer,
+                iceUsername = webcamConfig.iceUsername,
+                icePassword = webcamConfig.icePassword,
+                modifier = Modifier.fillMaxSize()
+            )
 
             // Schließen-Button oben rechts
             Box(
