@@ -7,7 +7,9 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import android.graphics.Bitmap
 import com.klipperremote.app.data.model.ConfigFile
+import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
+import com.klipperremote.app.data.model.DriverSettings
 import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
@@ -253,6 +255,12 @@ class KlipperRepository @Inject constructor(
         return KlipperClient(config).firmwareRestart()
     }
 
+    suspend fun getGcodeStore(): Result<List<ConsoleEntry>> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).getGcodeStore() }
+    }
+
     suspend fun restartHost(): Result<Unit> {
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
@@ -293,6 +301,18 @@ class KlipperRepository @Inject constructor(
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.success(null)
         return runCatching { KlipperClient(config).getPrintStats() }
+    }
+
+    suspend fun getDriverSettings(): Result<DriverSettings> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).getDriverSettings() }
+    }
+
+    suspend fun setDriverCurrent(stepperName: String, runCurrent: Float, holdCurrent: Float?): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).setDriverCurrent(stepperName, runCurrent, holdCurrent)
     }
 
     suspend fun getTuningData(): Result<TuningData> {

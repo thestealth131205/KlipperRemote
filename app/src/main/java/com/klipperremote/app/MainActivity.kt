@@ -33,6 +33,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.klipperremote.app.ui.screens.CrashLogScreen
 import com.klipperremote.app.ui.screens.GCodeViewerScreen
+import com.klipperremote.app.ui.screens.DriverSettingsScreen
 import com.klipperremote.app.ui.screens.HomeScreen
 import com.klipperremote.app.ui.screens.MachineConfigScreen
 import com.klipperremote.app.ui.screens.PrintProgressBar
@@ -75,6 +76,7 @@ class MainActivity : ComponentActivity() {
                         HomeScreen(
                             onNavigateToSettings = { navController.navigate("settings") },
                             onNavigateToMachine = { navController.navigate("machine_config") },
+                            onNavigateToDriverSettings = { navController.navigate("driver_settings") },
                             onOpenGCodeViewer = { filename ->
                                 val encoded = java.net.URLEncoder.encode(filename, "UTF-8")
                                 navController.navigate("gcode_viewer/$encoded")
@@ -90,6 +92,9 @@ class MainActivity : ComponentActivity() {
                     }
                     composable("machine_config") {
                         MachineConfigScreen(onNavigateBack = { navController.popBackStack() })
+                    }
+                    composable("driver_settings") {
+                        DriverSettingsScreen(onNavigateBack = { navController.popBackStack() })
                     }
                     composable(
                         "gcode_viewer/{filename}",

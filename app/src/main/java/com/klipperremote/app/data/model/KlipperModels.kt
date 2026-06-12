@@ -163,6 +163,12 @@ data class PrintStats(
     val extrudeFactor: Float = 1f        // Extrusionsfaktor (1.0 = 100 %)
 )
 
+data class ConsoleEntry(
+    val message: String,
+    val time: Double = 0.0,     // Unix-Zeit (Sekunden) der Meldung
+    val type: String = "response" // "command" (gesendeter Befehl) | "response" (Antwort)
+)
+
 data class FanInfo(
     val keyName: String,       // Klipper-interner Name, z. B. "heater_fan"
     val displayName: String,   // Anzeigename, z. B. "Heater Fan"
@@ -174,4 +180,19 @@ data class TuningData(
     val extrudeFactor: Int = 100,
     val partCoolingFan: Int = 0,
     val fans: List<FanInfo> = emptyList()
+)
+
+// Treiber-Einstellungen einer Achse (aus Klipper configfile-Settings gelesen)
+data class AxisDriver(
+    val axis: String,                  // "X", "Y", "Z"
+    val stepperName: String,           // Klipper-Sektion, z. B. "stepper_x"
+    val driverType: String = "",       // z. B. "tmc2209" (leer = kein TMC-Treiber erkannt)
+    val runCurrent: Float? = null,     // Lauf-Strom in A (live setzbar)
+    val holdCurrent: Float? = null,    // Halte-Strom in A (live setzbar)
+    val microsteps: Int? = null,       // Microsteps (nur Info – Neustart nötig)
+    val rotationDistance: Float? = null // Rotation-Distance in mm (nur Info – Neustart nötig)
+)
+
+data class DriverSettings(
+    val axes: List<AxisDriver> = emptyList()
 )

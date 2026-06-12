@@ -4,7 +4,9 @@ import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.klipperremote.app.data.model.ConfigFile
+import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
+import com.klipperremote.app.data.model.DriverSettings
 import com.klipperremote.app.data.model.GCodeLayer
 import com.klipperremote.app.data.model.GCodeSegment
 import com.klipperremote.app.data.model.GcodeMetadata
@@ -75,7 +77,16 @@ data class MainUiState(
     // Druckstatistiken (null = kein aktiver Druck)
     val printStats: PrintStats? = null,
     // Tuning-Daten
-    val tuningData: TuningData = TuningData()
+    val tuningData: TuningData = TuningData(),
+    // Konsole (Moonraker gcode_store)
+    val consoleEntries: List<ConsoleEntry> = emptyList(),
+    val consoleLoading: Boolean = false,
+    // Treiber-Einstellungen (X/Y/Z)
+    val driverSettings: DriverSettings = DriverSettings(),
+    val driverSettingsLoading: Boolean = false,
+    val driverSettingsSaving: Boolean = false,
+    val driverSettingsSaved: Boolean = false,
+    val driverSettingsError: String? = null
 )
 
 @HiltViewModel
@@ -716,6 +727,57 @@ class MainViewModel @Inject constructor(
                 .onFailure { e ->
                     _uiState.update { it.copy(error = "Firmware-Neustart fehlgeschlagen: ${e.message}") }
                 }
+        }
+    }
+
+    fun loadConsole() {
+        _uiState.update { it.copy(consoleLoading = true) }
+        queue.enqueueHigh {
+            repository.getGcodeStore()
+                .onSuccess { entries ->
+                    _uiState.update { it.copy(consoleEntries = entries, consoleLoading = false) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(consoleLoading = false, error = "Konsole: ${e.message}") }
+                }
+        }
+    }
+
+    // ── Treiber-Einstellungen (X/Y/Z) ───────────────────────────────────────────
+
+    fun loadDriverSettings() {
+        _uiState.update { it.copy(driverSettingsLoading = true, driverSettingsError = null) }
+        queue.enqueueNormal {
+            repository.getDriverSettings()
+                .onSuccess { settings ->
+                    _uiState.update { it.copy(driverSettings = settings, driverSettingsLoading = false) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(driverSettingsLoading = false, driverSettingsError = e.message) }
+                }
+        }
+    }
+
+    // Lauf-/Halte-Strom je Achse live anwenden (SET_TMC_CURRENT).
+    // edits: stepperName → Paar(runCurrent, holdCurrent?)
+    fun saveDriverSettings(edits: Map<String, Pair<Float, Float?>>) {
+        if (edits.isEmpty()) return
+        _uiState.update { it.copy(driverSettingsSaving = true, driverSettingsSaved = false, driverSettingsError = null) }
+        queue.enqueueHigh {
+            var firstError: String? = null
+            for ((stepper, currents) in edits) {
+                val res = repository.setDriverCurrent(stepper, currents.first, currents.second)
+                if (res.isFailure && firstError == null) {
+                    firstError = res.exceptionOrNull()?.message
+                }
+            }
+            if (firstError == null) {
+                _uiState.update { it.copy(driverSettingsSaving = false, driverSettingsSaved = true) }
+                delay(2000L)
+                _uiState.update { it.copy(driverSettingsSaved = false) }
+            } else {
+                _uiState.update { it.copy(driverSettingsSaving = false, driverSettingsError = firstError) }
+            }
         }
     }
 

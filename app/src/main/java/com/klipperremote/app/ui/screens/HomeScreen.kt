@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.FanInfo
 import com.klipperremote.app.data.model.KlipperPosition
@@ -58,6 +61,7 @@ import com.klipperremote.app.viewmodel.MainViewModel
 fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToMachine: () -> Unit = {},
+    onNavigateToDriverSettings: () -> Unit = {},
     onOpenGCodeViewer: (String) -> Unit = {},
     onNavigateToCrashLog: () -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
@@ -70,6 +74,7 @@ fun HomeScreen(
     var gcodeConfirmFile by remember { mutableStateOf<String?>(null) }
     var showTuningDialog by remember { mutableStateOf(false) }
     var showPauseConfirm by remember { mutableStateOf(false) }
+    var showConsole by remember { mutableStateOf(false) }
 
     val powerDevices = uiState.powerDevices
     val isPowerOn = powerDevices.any { it.status == "on" }
@@ -82,11 +87,13 @@ fun HomeScreen(
                 onNavigateToAppConfig = onNavigateToSettings,
                 onOpenWebcamConfig = { showWebcamSettings = true },
                 onNavigateToMachine = onNavigateToMachine,
+                onNavigateToDriverSettings = onNavigateToDriverSettings,
                 onStartPrint = { showGcodeFileBrowser = true },
                 onPausePrint = { showPauseConfirm = true },
                 onCancelPrint = { viewModel.cancelPrint() },
                 onNavigateToCrashLog = onNavigateToCrashLog,
-                onCoolDown = { viewModel.coolDown() }
+                onCoolDown = { viewModel.coolDown() },
+                onOpenConsole = { viewModel.loadConsole(); showConsole = true }
             )
         }
     ) { padding ->
@@ -461,6 +468,17 @@ fun HomeScreen(
             onSetPartFan  = { viewModel.setPartCoolingFan(it) },
             onSetFan      = { name, pct -> viewModel.setGenericFanSpeed(name, pct) },
             onDismiss     = { showTuningDialog = false }
+        )
+    }
+
+    // Konsolen-Dialog
+    if (showConsole) {
+        ConsoleDialog(
+            entries = uiState.consoleEntries,
+            isLoading = uiState.consoleLoading,
+            onRefresh = { viewModel.loadConsole() },
+            onSendGcode = { viewModel.sendGcode(it) },
+            onDismiss = { showConsole = false }
         )
     }
 
@@ -1635,11 +1653,13 @@ fun BottomControlBar(
     onNavigateToAppConfig: () -> Unit,
     onOpenWebcamConfig: () -> Unit,
     onNavigateToMachine: () -> Unit,
+    onNavigateToDriverSettings: () -> Unit = {},
     onStartPrint: () -> Unit = {},
     onPausePrint: () -> Unit = {},
     onCancelPrint: () -> Unit = {},
     onNavigateToCrashLog: () -> Unit = {},
-    onCoolDown: () -> Unit = {}
+    onCoolDown: () -> Unit = {},
+    onOpenConsole: () -> Unit = {}
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val statusText = when (printerState) {
@@ -1728,7 +1748,11 @@ fun BottomControlBar(
                 statusText,
                 color = statusColor,
                 fontSize = 14.sp,
-                fontWeight = FontWeight.Medium
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { onOpenConsole() }
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
             )
 
             Spacer(modifier = Modifier.weight(0.05f))
@@ -1776,12 +1800,178 @@ fun BottomControlBar(
                         leadingIcon = { Icon(Icons.Default.Build, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
                         onClick = { showMenu = false; onNavigateToMachine() }
                     )
+                    DropdownMenuItem(
+                        text = { Text("Driver Einstellung", color = OnSurface) },
+                        leadingIcon = { Icon(Icons.Default.Tune, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
+                        onClick = { showMenu = false; onNavigateToDriverSettings() }
+                    )
                     HorizontalDivider(color = Color(0xFF333333))
                     DropdownMenuItem(
                         text = { Text("Crash Log", color = Color(0xFFFF5555)) },
                         leadingIcon = { Icon(Icons.Default.BugReport, contentDescription = null, tint = Color(0xFFFF5555), modifier = Modifier.size(18.dp)) },
                         onClick = { showMenu = false; onNavigateToCrashLog() }
                     )
+                }
+            }
+        }
+    }
+}
+
+// ── Konsolen-Dialog ─────────────────────────────────────────────────────────────
+
+@Composable
+fun ConsoleDialog(
+    entries: List<ConsoleEntry>,
+    isLoading: Boolean,
+    onRefresh: () -> Unit,
+    onSendGcode: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var input by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
+    val timeFmt = remember { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()) }
+
+    // Bei neuen Meldungen ans Ende scrollen
+    LaunchedEffect(entries.size) {
+        if (entries.isNotEmpty()) listState.scrollToItem(entries.size - 1)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.85f),
+            shape = RoundedCornerShape(16.dp),
+            color = Color(0xFF121212)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Kopfzeile
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF1E1E1E))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Terminal,
+                        contentDescription = null,
+                        tint = AccentYellow,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Konsole",
+                        color = OnSurface,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onRefresh) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Aktualisieren", tint = OnSurface)
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Schließen", tint = OnSurface)
+                    }
+                }
+
+                // Meldungsliste
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    when {
+                        isLoading && entries.isEmpty() -> CircularProgressIndicator(
+                            modifier = Modifier.align(Alignment.Center),
+                            color = AccentYellow
+                        )
+                        entries.isEmpty() -> Text(
+                            "Keine Konsolen-Meldungen",
+                            color = OnSurfaceDim,
+                            fontSize = 13.sp,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                        else -> LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            items(entries) { entry ->
+                                val isCommand = entry.type == "command"
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    if (entry.time > 0.0) {
+                                        Text(
+                                            timeFmt.format(java.util.Date((entry.time * 1000).toLong())),
+                                            color = Color(0xFF666666),
+                                            fontSize = 11.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                    }
+                                    Text(
+                                        entry.message,
+                                        color = if (isCommand) AccentYellow else Color(0xFFCCCCCC),
+                                        fontSize = 12.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Eingabezeile
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF1E1E1E))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val send = {
+                        val cmd = input.trim()
+                        if (cmd.isNotEmpty()) {
+                            onSendGcode(cmd)
+                            input = ""
+                            focusManager.clearFocus()
+                        }
+                    }
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("G-Code senden…", color = OnSurfaceDim, fontSize = 13.sp) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = OnSurface,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            fontSize = 13.sp
+                        ),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { send() }),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentYellow,
+                            unfocusedBorderColor = Color(0xFF333333)
+                        )
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(AccentYellow)
+                            .clickable { send() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Senden",
+                            tint = Color.Black,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
         }

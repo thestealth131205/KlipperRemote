@@ -5,7 +5,10 @@ import android.graphics.BitmapFactory
 import com.klipperremote.app.data.model.FanInfo
 import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.ConfigFile
+import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
+import com.klipperremote.app.data.model.AxisDriver
+import com.klipperremote.app.data.model.DriverSettings
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
@@ -277,6 +280,36 @@ class KlipperClient(private val config: KlipperConfig) {
                 .build()
             val resp = client.newCall(req).execute()
             if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        }
+    }
+
+    // Konsolen-Verlauf (Moonraker gcode_store) abfragen
+    suspend fun getGcodeStore(count: Int = 100): List<ConsoleEntry> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/server/gcode_store?count=$count")
+                .get().build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext emptyList()
+            val arr = JSONObject(body)
+                .optJSONObject("result")?.optJSONArray("gcode_store")
+                ?: return@withContext emptyList()
+            val entries = mutableListOf<ConsoleEntry>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val msg = obj.optString("message", "")
+                if (msg.isBlank()) continue
+                entries.add(
+                    ConsoleEntry(
+                        message = msg,
+                        time = obj.optDouble("time", 0.0),
+                        type = obj.optString("type", "response")
+                    )
+                )
+            }
+            entries
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 
@@ -721,6 +754,65 @@ class KlipperClient(private val config: KlipperConfig) {
         val speed = "%.2f".format(percent / 100.0)
         runCatching { sendGcodeInternal("SET_FAN_SPEED FAN=$fanKeyName SPEED=$speed") }
     }
+
+    // Treiber-Einstellungen (X/Y/Z) aus der Klipper-Konfiguration lesen.
+    // run_current/hold_current stammen aus der "tmcXXXX stepper_?"-Sektion,
+    // microsteps/rotation_distance aus der "stepper_?"-Sektion.
+    suspend fun getDriverSettings(): DriverSettings = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$baseUrl/printer/objects/query?configfile=settings").get().build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext DriverSettings()
+            val settings = JSONObject(body)
+                .optJSONObject("result")
+                ?.optJSONObject("status")
+                ?.optJSONObject("configfile")
+                ?.optJSONObject("settings")
+                ?: return@withContext DriverSettings()
+
+            // Klipper-Settings-Schlüssel sind kleingeschrieben (z. B. "tmc2209 stepper_x")
+            val tmcPrefixes = listOf("tmc2209", "tmc2208", "tmc2130", "tmc2240", "tmc5160", "tmc2660")
+            val axes = listOf("X" to "stepper_x", "Y" to "stepper_y", "Z" to "stepper_z").map { (axis, stepper) ->
+                val stepperObj = settings.optJSONObject(stepper)
+                var driverType = ""
+                var runCurrent: Float? = null
+                var holdCurrent: Float? = null
+                for (prefix in tmcPrefixes) {
+                    val tmcObj = settings.optJSONObject("$prefix $stepper")
+                    if (tmcObj != null) {
+                        driverType = prefix
+                        runCurrent = tmcObj.optDouble("run_current", Double.NaN).takeIf { !it.isNaN() }?.toFloat()
+                        holdCurrent = tmcObj.optDouble("hold_current", Double.NaN).takeIf { !it.isNaN() }?.toFloat()
+                        break
+                    }
+                }
+                AxisDriver(
+                    axis = axis,
+                    stepperName = stepper,
+                    driverType = driverType,
+                    runCurrent = runCurrent,
+                    holdCurrent = holdCurrent,
+                    microsteps = stepperObj?.optInt("microsteps", -1)?.takeIf { it > 0 },
+                    rotationDistance = stepperObj?.optDouble("rotation_distance", Double.NaN)
+                        ?.takeIf { !it.isNaN() }?.toFloat()
+                )
+            }
+            DriverSettings(axes = axes)
+        } catch (e: Exception) {
+            DriverSettings()
+        }
+    }
+
+    // Lauf-/Halte-Strom einer Achse live setzen: SET_TMC_CURRENT
+    suspend fun setDriverCurrent(stepperName: String, runCurrent: Float, holdCurrent: Float?): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val loc = java.util.Locale.US
+                val sb = StringBuilder("SET_TMC_CURRENT STEPPER=$stepperName CURRENT=${String.format(loc, "%.2f", runCurrent)}")
+                if (holdCurrent != null) sb.append(" HOLDCURRENT=${String.format(loc, "%.2f", holdCurrent)}")
+                sendGcodeInternal(sb.toString())
+            }
+        }
 
     // Aktuelle Druckkopf-Position abfragen
     suspend fun getPosition(): KlipperPosition = withContext(Dispatchers.IO) {
