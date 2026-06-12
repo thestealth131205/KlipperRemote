@@ -48,6 +48,7 @@ import com.klipperremote.app.ui.screens.HomeScreen
 import com.klipperremote.app.ui.screens.MachineConfigScreen
 import com.klipperremote.app.ui.screens.PrintProgressBar
 import com.klipperremote.app.ui.screens.SettingsScreen
+import com.klipperremote.app.ui.screens.SlicerScreen
 import com.klipperremote.app.ui.theme.KlipperRemoteTheme
 import com.klipperremote.app.viewmodel.MainViewModel
 import dagger.hilt.android.AndroidEntryPoint
@@ -113,8 +114,12 @@ class MainActivity : ComponentActivity() {
                                 val encoded = java.net.URLEncoder.encode(filename, "UTF-8")
                                 navController.navigate("gcode_viewer/$encoded")
                             },
-                            onNavigateToCrashLog = { navController.navigate("crash_log") }
+                            onNavigateToCrashLog = { navController.navigate("crash_log") },
+                            onNavigateToSlicer = { navController.navigate("slicer") }
                         )
+                    }
+                    composable("slicer") {
+                        SlicerScreen(onNavigateBack = { navController.popBackStack() })
                     }
                     composable("settings") {
                         SettingsScreen(onNavigateBack = { navController.popBackStack() })

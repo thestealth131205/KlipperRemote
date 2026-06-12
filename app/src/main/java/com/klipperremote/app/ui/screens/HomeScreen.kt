@@ -58,6 +58,7 @@ fun HomeScreen(
     onNavigateToDriverSettings: () -> Unit = {},
     onOpenGCodeViewer: (String) -> Unit = {},
     onNavigateToCrashLog: () -> Unit = {},
+    onNavigateToSlicer: () -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -86,6 +87,7 @@ fun HomeScreen(
                 onPausePrint = { showPauseConfirm = true },
                 onCancelPrint = { viewModel.cancelPrint() },
                 onNavigateToCrashLog = onNavigateToCrashLog,
+                onNavigateToSlicer = onNavigateToSlicer,
                 onCoolDown = { viewModel.coolDown() },
                 onOpenConsole = { viewModel.loadConsole(); showConsole = true }
             )
@@ -1650,6 +1652,7 @@ fun BottomControlBar(
     onPausePrint: () -> Unit = {},
     onCancelPrint: () -> Unit = {},
     onNavigateToCrashLog: () -> Unit = {},
+    onNavigateToSlicer: () -> Unit = {},
     onCoolDown: () -> Unit = {},
     onOpenConsole: () -> Unit = {}
 ) {
@@ -1796,6 +1799,18 @@ fun BottomControlBar(
                         text = { Text("Driver Einstellung", color = OnSurface) },
                         leadingIcon = { Icon(Icons.Default.Tune, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
                         onClick = { showMenu = false; onNavigateToDriverSettings() }
+                    )
+                    HorizontalDivider(color = Color(0xFF333333))
+                    Text(
+                        "Werkzeuge",
+                        color = Color(0xFF888888),
+                        fontSize = 11.sp,
+                        modifier = androidx.compose.ui.Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Slicen", color = OnSurface) },
+                        leadingIcon = { Icon(Icons.Default.ViewInAr, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
+                        onClick = { showMenu = false; onNavigateToSlicer() }
                     )
                     HorizontalDivider(color = Color(0xFF333333))
                     DropdownMenuItem(

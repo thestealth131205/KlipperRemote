@@ -30,3 +30,6 @@ Thumbs.db
 # ── Misc ────────────────────────────────────────────────────
 *.log
 /tmp/
+
+# ── Local slicer engine build workspace — NEVER push ────────
+slicer-engine/
