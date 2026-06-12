@@ -315,6 +315,7 @@ private class Projection(
 
 private const val BED_X = 220f
 private const val BED_Y = 220f
+private const val MAX_RENDER_TRIS = 25_000
 
 private fun computeProjection(
     model: StlModel,
@@ -326,13 +327,17 @@ private fun computeProjection(
 ): Projection? {
     if (size.width == 0 || size.height == 0 || model.tris.isEmpty()) return null
 
+    // Für die Vorschau auf MAX_RENDER_TRIS begrenzen (gleichmäßig ausgedünnt).
+    val step = if (model.tris.size > MAX_RENDER_TRIS) model.tris.size / MAX_RENDER_TRIS else 1
+    val renderTris = if (step > 1) model.tris.filterIndexed { i, _ -> i % step == 0 } else model.tris
+
     // 1) Modell rotieren+skalieren (um Modellmittelpunkt), dann auf Bett absenken & zentrieren.
-    val transformed = ArrayList<Triple<Vec3, Vec3, Vec3>>(model.tris.size)
-    val normals = ArrayList<Vec3>(model.tris.size)
+    val transformed = ArrayList<Triple<Vec3, Vec3, Vec3>>(renderTris.size)
+    val normals = ArrayList<Vec3>(renderTris.size)
     var mnz = Float.MAX_VALUE
     var sumX = 0f; var sumY = 0f; var cnt = 0
     fun tf(v: Vec3) = matVec(modelRot, (v - model.center)) * scale
-    for (t in model.tris) {
+    for (t in renderTris) {
         val a = tf(t.a); val b = tf(t.b); val c = tf(t.c)
         transformed.add(Triple(a, b, c))
         normals.add(matVec(modelRot, t.n).normalized())
@@ -441,8 +446,13 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
         }
     }
 
-    val projection by remember(model, modelRot, scaleVal, az, el, viewport) {
-        derivedStateOf { model?.let { computeProjection(it, modelRot, scaleVal, az, el, viewport) } }
+    val projection by produceState<Projection?>(null, model, modelRot, scaleVal, az, el, viewport) {
+        val m = model
+        if (m == null || viewport.width == 0 || viewport.height == 0) { value = null; return@produceState }
+        val rotSnapshot = modelRot.copyOf() // FloatArray vor Background-Zugriff kopieren
+        value = withContext(Dispatchers.Default) {
+            computeProjection(m, rotSnapshot, scaleVal, az, el, viewport)
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(BackgroundDark)) {
