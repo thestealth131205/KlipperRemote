@@ -713,6 +713,27 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
         else withContext(Dispatchers.Default) { renderModelBitmap(p, viewport.width, viewport.height) }
     }
 
+    // Maße (B/T/H in mm) des gedrehten, skalierten Modells – im Hintergrund berechnet.
+    // Triple = (Breite X, Tiefe Y, Höhe Z) nach Rotation, multipliziert mit der Skalierung.
+    val modelDims by produceState<Triple<Float, Float, Float>?>(null, displayModel, modelRot, scaleVal) {
+        val m = displayModel
+        if (m == null) { value = null; return@produceState }
+        val rot = modelRot.copyOf()
+        value = withContext(Dispatchers.Default) {
+            var mnx = Float.MAX_VALUE; var mny = Float.MAX_VALUE; var mnz = Float.MAX_VALUE
+            var mxx = -Float.MAX_VALUE; var mxy = -Float.MAX_VALUE; var mxz = -Float.MAX_VALUE
+            for (t in m.tris) {
+                for (v in arrayOf(t.a, t.b, t.c)) {
+                    val r = matVec(rot, v)
+                    if (r.x < mnx) mnx = r.x; if (r.x > mxx) mxx = r.x
+                    if (r.y < mny) mny = r.y; if (r.y > mxy) mxy = r.y
+                    if (r.z < mnz) mnz = r.z; if (r.z > mxz) mxz = r.z
+                }
+            }
+            Triple((mxx - mnx) * scaleVal, (mxy - mny) * scaleVal, (mxz - mnz) * scaleVal)
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize().background(BackgroundDark)) {
 
         // ── schmale Topbar ──────────────────────────────────────────────────
@@ -810,9 +831,38 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                 .fillMaxWidth()
                 .background(BackgroundDark)
                 .onSizeChanged { viewport = it }
-                .pointerInput(tool, model) {
+                // EIN gemeinsamer pointerInput pro Werkzeug. Zwei separate pointerInput
+                // (einer mit detectTransformGestures/detectDragGestures, einer mit
+                // detectTapGestures) konkurrierten um dieselben Events → im Stützen-Modus
+                // kamen Taps nicht an. Jetzt ist je Modus genau EIN Detektor aktiv.
+                .pointerInput(tool, supportDelete, projection, model) {
                     when (tool) {
-                        SlicerTool.SUPPORT -> { /* kein Orbit/Zoom – Tippen setzt/entfernt Stützen */ }
+                        SlicerTool.SUPPORT -> {
+                            // Tippen setzt bzw. entfernt Stützpunkte (kein Orbit/Zoom).
+                            detectTapGestures { offset ->
+                                val proj = projection ?: return@detectTapGestures
+                                if (supportDelete) {
+                                    // Nächstgelegene gesetzte Stütze entfernen.
+                                    var bestIdx = -1; var bestD = Float.MAX_VALUE
+                                    supports.forEachIndexed { i, w ->
+                                        val s = proj.worldToScreen(w)
+                                        val dx = s.x - offset.x; val dy = s.y - offset.y
+                                        val d = dx * dx + dy * dy
+                                        if (d < bestD) { bestD = d; bestIdx = i }
+                                    }
+                                    if (bestIdx >= 0 && bestD < 60f * 60f) supports.removeAt(bestIdx)
+                                } else {
+                                    // Nächstgelegenen projizierten Dreiecks-Mittelpunkt picken.
+                                    var best: Vec3? = null; var bestD = Float.MAX_VALUE
+                                    for (k in 0 until proj.triCount) {
+                                        val dx = proj.pickSX[k] - offset.x; val dy = proj.pickSY[k] - offset.y
+                                        val d = dx * dx + dy * dy
+                                        if (d < bestD) { bestD = d; best = Vec3(proj.pickWX[k], proj.pickWY[k], proj.pickWZ[k]) }
+                                    }
+                                    if (best != null && bestD < 60f * 60f) supports.add(best)
+                                }
+                            }
+                        }
                         SlicerTool.NONE -> {
                             // Kein Werkzeug aktiv: Orbit (Ziehen) + Pinch-Zoom.
                             detectTransformGestures { _, pan, gestureZoom, _ ->
@@ -829,34 +879,21 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                         }
                     }
                 }
-                .pointerInput(tool, supportDelete, projection) {
-                    detectTapGestures { offset ->
-                        if (tool != SlicerTool.SUPPORT) return@detectTapGestures
-                        val proj = projection ?: return@detectTapGestures
-                        if (supportDelete) {
-                            // Nächstgelegene gesetzte Stütze entfernen.
-                            var bestIdx = -1; var bestD = Float.MAX_VALUE
-                            supports.forEachIndexed { i, w ->
-                                val s = proj.worldToScreen(w)
-                                val dx = s.x - offset.x; val dy = s.y - offset.y
-                                val d = dx * dx + dy * dy
-                                if (d < bestD) { bestD = d; bestIdx = i }
-                            }
-                            if (bestIdx >= 0 && bestD < 60f * 60f) supports.removeAt(bestIdx)
-                        } else {
-                            // Nächstgelegenen projizierten Dreiecks-Mittelpunkt picken.
-                            var best: Vec3? = null; var bestD = Float.MAX_VALUE
-                            for (k in 0 until proj.triCount) {
-                                val dx = proj.pickSX[k] - offset.x; val dy = proj.pickSY[k] - offset.y
-                                val d = dx * dx + dy * dy
-                                if (d < bestD) { bestD = d; best = Vec3(proj.pickWX[k], proj.pickWY[k], proj.pickWZ[k]) }
-                            }
-                            if (best != null && bestD < 60f * 60f) supports.add(best)
-                        }
-                    }
-                }
         ) {
             SlicerCanvas(projection = projection, modelBitmap = modelBitmap, supports = supports, supportProfile = supportProfile)
+
+            // Maße oben links (grau, untereinander) zum geladenen Modell.
+            modelDims?.let { (w, d, h) ->
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 12.dp, top = 10.dp)
+                ) {
+                    Text("Breite: %.1f mm".format(w), color = OnSurfaceDim, fontSize = 12.sp)
+                    Text("Tiefe: %.1f mm".format(d), color = OnSurfaceDim, fontSize = 12.sp)
+                    Text("Höhe: %.1f mm".format(h), color = OnSurfaceDim, fontSize = 12.sp)
+                }
+            }
 
             if (model == null && !loading) {
                 Column(
