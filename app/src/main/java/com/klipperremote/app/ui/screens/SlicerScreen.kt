@@ -532,40 +532,42 @@ private fun saveProject(
 } catch (e: Exception) { false }
 
 /** Liest einen gespeicherten Bett-Zustand zurück. */
-private fun loadProject(f: File): SlicerProject? = try {
-    val o = org.json.JSONObject(f.readText())
-    val rotArr = o.getJSONArray("rot")
-    val rot = FloatArray(9) { rotArr.getDouble(it).toFloat() }
-    val triArr = o.getJSONArray("tris")
-    val tris = ArrayList<Tri>(triArr.length())
-    for (i in 0 until triArr.length()) {
-        val a = triArr.getJSONArray(i)
-        tris.add(Tri(
-            Vec3(a.getDouble(0).toFloat(), a.getDouble(1).toFloat(), a.getDouble(2).toFloat()),
-            Vec3(a.getDouble(3).toFloat(), a.getDouble(4).toFloat(), a.getDouble(5).toFloat()),
-            Vec3(a.getDouble(6).toFloat(), a.getDouble(7).toFloat(), a.getDouble(8).toFloat()),
-            Vec3(a.getDouble(9).toFloat(), a.getDouble(10).toFloat(), a.getDouble(11).toFloat())
-        ))
-    }
-    if (tris.isEmpty()) return null
-    val sup = o.optJSONArray("supports")
-    val supports = ArrayList<Vec3>()
-    if (sup != null) for (i in 0 until sup.length()) {
-        val s = sup.getJSONArray(i)
-        supports.add(Vec3(s.getDouble(0).toFloat(), s.getDouble(1).toFloat(), s.getDouble(2).toFloat()))
-    }
-    SlicerProject(
-        name = o.optString("name", f.nameWithoutExtension),
-        model = StlModel(tris),
-        modelRot = rot,
-        scale = o.optDouble("scale", 1.0).toFloat(),
-        simplify = o.optInt("simplify", 0),
-        az = o.optDouble("az", 35.0).toFloat(),
-        el = o.optDouble("el", 60.0).toFloat(),
-        zoom = o.optDouble("zoom", 1.0).toFloat(),
-        supports = supports
-    )
-} catch (e: Exception) { null }
+private fun loadProject(f: File): SlicerProject? {
+    return try {
+        val o = org.json.JSONObject(f.readText())
+        val rotArr = o.getJSONArray("rot")
+        val rot = FloatArray(9) { rotArr.getDouble(it).toFloat() }
+        val triArr = o.getJSONArray("tris")
+        val tris = ArrayList<Tri>(triArr.length())
+        for (i in 0 until triArr.length()) {
+            val a = triArr.getJSONArray(i)
+            tris.add(Tri(
+                Vec3(a.getDouble(0).toFloat(), a.getDouble(1).toFloat(), a.getDouble(2).toFloat()),
+                Vec3(a.getDouble(3).toFloat(), a.getDouble(4).toFloat(), a.getDouble(5).toFloat()),
+                Vec3(a.getDouble(6).toFloat(), a.getDouble(7).toFloat(), a.getDouble(8).toFloat()),
+                Vec3(a.getDouble(9).toFloat(), a.getDouble(10).toFloat(), a.getDouble(11).toFloat())
+            ))
+        }
+        if (tris.isEmpty()) return null
+        val sup = o.optJSONArray("supports")
+        val supports = ArrayList<Vec3>()
+        if (sup != null) for (i in 0 until sup.length()) {
+            val s = sup.getJSONArray(i)
+            supports.add(Vec3(s.getDouble(0).toFloat(), s.getDouble(1).toFloat(), s.getDouble(2).toFloat()))
+        }
+        SlicerProject(
+            name = o.optString("name", f.nameWithoutExtension),
+            model = StlModel(tris),
+            modelRot = rot,
+            scale = o.optDouble("scale", 1.0).toFloat(),
+            simplify = o.optInt("simplify", 0),
+            az = o.optDouble("az", 35.0).toFloat(),
+            el = o.optDouble("el", 60.0).toFloat(),
+            zoom = o.optDouble("zoom", 1.0).toFloat(),
+            supports = supports
+        )
+    } catch (e: Exception) { null }
+}
 
 @Composable
 fun SlicerScreen(onNavigateBack: () -> Unit) {
