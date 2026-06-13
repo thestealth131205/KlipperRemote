@@ -354,6 +354,17 @@ class KlipperClient(private val config: KlipperConfig) {
         resp.body?.string() ?: ""
     }
 
+    /** Streamt die GCode-Datei zeilenweise – der volle Dateiinhalt wird nie vollständig
+     *  in den Speicher gepuffert. Das verhindert, dass Moonraker auf dem RPi die gesamte
+     *  Datei auf einmal in den RAM lädt und den Pi dadurch zum Einfrieren bringt. */
+    suspend fun <T> withGcodeStream(filename: String, block: (java.io.BufferedReader) -> T): T = withContext(Dispatchers.IO) {
+        val encoded = URLEncoder.encode(filename, "UTF-8").replace("+", "%20")
+        val req = Request.Builder().url("$baseUrl/server/files/gcodes/$encoded").get().build()
+        val resp = client.newCall(req).execute()
+        if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        resp.body!!.byteStream().bufferedReader().use { block(it) }
+    }
+
     // G-Code Metadaten (Vorschaubild + Druckzeit) via Moonraker laden
     suspend fun getGcodeMetadata(filename: String): GcodeMetadata = withContext(Dispatchers.IO) {
         try {

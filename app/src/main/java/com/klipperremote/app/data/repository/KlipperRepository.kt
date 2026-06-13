@@ -234,6 +234,12 @@ class KlipperRepository @Inject constructor(
         return runCatching { KlipperClient(config).getGcodeFileContent(filename) }
     }
 
+    suspend fun <T> streamGcodeFile(filename: String, block: (java.io.BufferedReader) -> T): Result<T> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).withGcodeStream(filename, block) }
+    }
+
     suspend fun getBedSize(): Result<Pair<Float, Float>> {
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.success(Pair(235f, 235f))

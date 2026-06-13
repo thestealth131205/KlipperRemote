@@ -703,10 +703,10 @@ class MainViewModel @Inject constructor(
             repository.getBedSize().onSuccess { bed ->
                 _uiState.update { it.copy(gcodeViewerBedSize = bed) }
             }
-            // G-Code-Datei laden und parsen
-            repository.getGcodeFileContent(filename)
-                .onSuccess { content ->
-                    val layers = withContext(Dispatchers.Default) { parseGCode(content) }
+            // G-Code-Datei zeilenweise streamen und parsen – kein vollständiger RAM-Puffer,
+            // damit Moonraker auf dem RPi nicht einfriert (große Dateien können 100+ MB sein).
+            repository.streamGcodeFile(filename) { reader -> parseGCode(reader) }
+                .onSuccess { layers ->
                     _uiState.update { it.copy(gcodeViewerLayers = layers, gcodeViewerLoading = false) }
                 }
                 .onFailure { e ->
@@ -719,7 +719,7 @@ class MainViewModel @Inject constructor(
         _uiState.update { it.copy(gcodeViewerLayers = emptyList(), gcodeViewerError = null, gcodeViewerLoading = false) }
     }
 
-    private fun parseGCode(content: String): List<GCodeLayer> {
+    private fun parseGCode(reader: java.io.BufferedReader): List<GCodeLayer> {
         val layers = mutableListOf<GCodeLayer>()
         var currentX = 0f
         var currentY = 0f
@@ -731,15 +731,25 @@ class MainViewModel @Inject constructor(
         val currentSegments = mutableListOf<GCodeSegment>()
         var currentTypeComment = ""   // letzter ;TYPE: Kommentar
 
+        // Segmente pro Schicht begrenzen: Zeichnen aller Segmente kostet CPU pro Frame.
+        // Bei sehr komplexen Schichten (>8000 Segmente) wird jedes N-te übernommen.
+        val MAX_SEGS = 8_000
+
         fun flushLayer() {
             if (currentSegments.isNotEmpty()) {
-                layers.add(GCodeLayer(if (layerZ.isNaN()) currentZ else layerZ, currentSegments.toList()))
+                val segs = if (currentSegments.size > MAX_SEGS) {
+                    val stride = currentSegments.size / MAX_SEGS
+                    currentSegments.filterIndexed { i, _ -> i % stride == 0 }
+                } else {
+                    currentSegments.toList()
+                }
+                layers.add(GCodeLayer(if (layerZ.isNaN()) currentZ else layerZ, segs))
             }
             currentSegments.clear()
             layerZ = Float.NaN
         }
 
-        for (rawLine in content.lineSequence()) {
+        for (rawLine in reader.lineSequence()) {
             val line = rawLine.trim()
             if (line.isBlank()) continue
 
