@@ -46,7 +46,7 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 private const val PREFS_NAME = "license_prefs"
-private const val KEY_EMAIL = "verified_email"
+private const val KEY_EMAIL = "verified_license_key"
 private const val LICENSE_URL = "https://letheapp.de/klipper_licenses.txt"
 
 private val NeonYellow = Color(0xFFCCFF00)
@@ -74,7 +74,7 @@ fun LicenseCheckOverlay(content: @Composable () -> Unit) {
     val scope = rememberCoroutineScope()
 
     var state by remember { mutableStateOf(LicenseState.LOADING) }
-    var emailInput by remember { mutableStateOf("") }
+    var keyInput by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf("") }
 
     val httpClient = remember {
@@ -84,12 +84,19 @@ fun LicenseCheckOverlay(content: @Composable () -> Unit) {
             .build()
     }
 
-    suspend fun fetchAndCheck(email: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun fetchAndCheck(key: String): Boolean = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(LICENSE_URL).build()
         httpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}")
             val body = resp.body?.string() ?: ""
-            body.lines().any { it.trim().equals(email.trim(), ignoreCase = true) }
+            val input = key.trim()
+            body.lines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith('#') }
+                .any { line ->
+                    val firstToken = line.split(Regex("\\s+"))[0]
+                    firstToken.equals(input, ignoreCase = true)
+                }
         }
     }
 
@@ -105,7 +112,7 @@ fun LicenseCheckOverlay(content: @Composable () -> Unit) {
                     state = LicenseState.AUTHORIZED
                 } else {
                     prefs.edit().remove(KEY_EMAIL).apply()
-                    errorMessage = "Dein Zugang wurde widerrufen. Bitte wende dich an den Entwickler."
+                    errorMessage = "Dein Lizenzschlüssel ist ungültig. Bitte wende dich an den Entwickler."
                     state = LicenseState.BLOCKED
                 }
             } catch (e: Exception) {
@@ -139,7 +146,7 @@ fun LicenseCheckOverlay(content: @Composable () -> Unit) {
                 ) {
                     CircularProgressIndicator(color = NeonYellow)
                     Text(
-                        text = if (state == LicenseState.LOADING) "Lizenz wird geprüft…" else "E-Mail wird überprüft…",
+                        text = if (state == LicenseState.LOADING) "Lizenz wird geprüft…" else "Schlüssel wird überprüft…",
                         color = Color.White,
                         fontSize = 15.sp
                     )
@@ -167,7 +174,7 @@ fun LicenseCheckOverlay(content: @Composable () -> Unit) {
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Gib deine lizenzierte E-Mail-Adresse ein,\num die App zu verwenden.",
+                        text = "Gib deinen Lizenzschlüssel ein,\num die App zu verwenden.",
                         color = TextGray,
                         fontSize = 14.sp,
                         textAlign = TextAlign.Center
@@ -182,10 +189,10 @@ fun LicenseCheckOverlay(content: @Composable () -> Unit) {
                     }
                     Spacer(Modifier.height(4.dp))
                     OutlinedTextField(
-                        value = emailInput,
-                        onValueChange = { emailInput = it },
-                        label = { Text("E-Mail-Adresse", color = TextGray) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        value = keyInput,
+                        onValueChange = { keyInput = it.uppercase() },
+                        label = { Text("Lizenzschlüssel (z. B. KLPR-XXXX-XXXX-XXXX)", color = TextGray) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color.White,
@@ -198,16 +205,16 @@ fun LicenseCheckOverlay(content: @Composable () -> Unit) {
                     )
                     Button(
                         onClick = {
-                            val email = emailInput.trim()
-                            if (email.isEmpty()) return@Button
+                            val key = keyInput.trim()
+                            if (key.isEmpty()) return@Button
                             state = LicenseState.CHECKING
                             scope.launch {
                                 try {
-                                    if (fetchAndCheck(email)) {
-                                        prefs.edit().putString(KEY_EMAIL, email.lowercase()).apply()
+                                    if (fetchAndCheck(key)) {
+                                        prefs.edit().putString(KEY_EMAIL, key.uppercase()).apply()
                                         state = LicenseState.AUTHORIZED
                                     } else {
-                                        errorMessage = "Diese E-Mail-Adresse ist nicht lizenziert."
+                                        errorMessage = "Dieser Lizenzschlüssel ist nicht gültig."
                                         state = LicenseState.INPUT
                                     }
                                 } catch (e: Exception) {
@@ -219,7 +226,7 @@ fun LicenseCheckOverlay(content: @Composable () -> Unit) {
                         colors = ButtonDefaults.buttonColors(containerColor = NeonYellow),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Lizenz prüfen", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Text("Schlüssel prüfen", color = Color.Black, fontWeight = FontWeight.Bold)
                     }
                 }
             }
