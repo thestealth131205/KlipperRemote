@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Forest
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Transform
 import androidx.compose.material.icons.filled.UploadFile
@@ -281,6 +283,37 @@ private fun parse3mf(bytes: ByteArray): StlModel? {
     return if (tris.isEmpty()) null else StlModel(tris)
 }
 
+/**
+ * Vereinfacht das Mesh per Vertex-Clustering: Vertices werden auf ein Gitter
+ * gerundet, dadurch fallen benachbarte Punkte zusammen und Dreiecke kollabieren.
+ * Im Gegensatz zum Wegwerfen einzelner Dreiecke entstehen KEINE Löcher.
+ * level 0 = nicht vereinfachen, level 10 = sehr stark (grobes Gitter).
+ */
+private fun simplifyModel(model: StlModel, level: Int): StlModel {
+    if (level <= 0 || model.tris.isEmpty()) return model
+    val size = model.max - model.min
+    val maxDim = max(size.x, max(size.y, size.z))
+    if (maxDim < 1e-4f) return model
+    // Zellgröße wächst mit dem Level: Level 1 ~0,4 % der Modellgröße (fein),
+    // Level 10 ~4 % (≈ 25 Zellen über die größte Achse → deutlich gröber).
+    val cell = maxDim * (0.004f * level)
+    fun snap(v: Vec3) = Vec3(
+        Math.round(v.x / cell) * cell,
+        Math.round(v.y / cell) * cell,
+        Math.round(v.z / cell) * cell
+    )
+    val out = ArrayList<Tri>(model.tris.size)
+    for (t in model.tris) {
+        val a = snap(t.a); val b = snap(t.b); val c = snap(t.c)
+        // Dreieck zu einer Linie/Punkt kollabiert → weglassen (degeneriert).
+        if (a == b || b == c || a == c) continue
+        var n = (b - a).cross(c - a)
+        n = if (n.length() < 1e-6f) t.n else n.normalized()
+        out.add(Tri(a, b, c, n))
+    }
+    return if (out.isEmpty()) model else StlModel(out)
+}
+
 /** Ermittelt eine Rotation, die die flächengrößte Modellseite nach unten (-Z) legt. */
 private fun autoAlignRotation(model: StlModel): FloatArray {
     if (model.tris.isEmpty()) return matIdentity()
@@ -310,12 +343,12 @@ private class ProjTri(val p0: Offset, val p1: Offset, val p2: Offset, val depth:
 private class Projection(
     val tris: List<ProjTri>,
     val picks: List<Pair<Offset, Vec3>>, // Bildschirm-Centroid -> Welt-Centroid
-    val worldToScreen: (Vec3) -> Offset
+    val worldToScreen: (Vec3) -> Offset,
+    val pxPerMm: Float                    // orthografischer Maßstab (für Stützen-Dicke)
 )
 
 private const val BED_X = 220f
 private const val BED_Y = 220f
-private const val MAX_RENDER_TRIS = 25_000
 
 private fun computeProjection(
     model: StlModel,
@@ -323,13 +356,13 @@ private fun computeProjection(
     scale: Float,
     azDeg: Float,
     elDeg: Float,
+    viewZoom: Float,
     size: IntSize
 ): Projection? {
     if (size.width == 0 || size.height == 0 || model.tris.isEmpty()) return null
 
-    // Für die Vorschau auf MAX_RENDER_TRIS begrenzen (gleichmäßig ausgedünnt).
-    val step = if (model.tris.size > MAX_RENDER_TRIS) model.tris.size / MAX_RENDER_TRIS else 1
-    val renderTris = if (step > 1) model.tris.filterIndexed { i, _ -> i % step == 0 } else model.tris
+    // ALLE Dreiecke rendern – Ausdünnen riss Löcher ins Mesh (sah aus wie Drahtgitter).
+    val renderTris = model.tris
 
     // 1) Modell rotieren+skalieren (um Modellmittelpunkt), dann auf Bett absenken & zentrieren.
     val transformed = ArrayList<Triple<Vec3, Vec3, Vec3>>(renderTris.size)
@@ -355,7 +388,7 @@ private fun computeProjection(
 
     // 3) Zoom so wählen, dass das Druckbett komfortabel ins Viewport passt.
     val bedMax = max(BED_X, BED_Y)
-    val zoom = (min(size.width, size.height) * 0.78f) / bedMax
+    val zoom = (min(size.width, size.height) * 0.78f) / bedMax * viewZoom
     val cx = size.width / 2f
     val cy = size.height * 0.62f // Bett etwas tiefer setzen
 
@@ -388,7 +421,7 @@ private fun computeProjection(
     }
     // Painter's algorithm: hinten zuerst (großes depth zuerst).
     projTris.sortByDescending { it.depth }
-    return Projection(projTris, picks, worldToScreen)
+    return Projection(projTris, picks, worldToScreen, zoom)
 }
 
 // ── Screen ───────────────────────────────────────────────────────────────────
@@ -397,6 +430,142 @@ private enum class SlicerTool { NONE, SUPPORT, TRANSFORM }
 private val PROFILE_TYPES = listOf("printer", "process", "filament")
 private fun profileDir(ctx: android.content.Context, type: String) =
     File(ctx.filesDir, "slicer_profiles/$type").apply { mkdirs() }
+
+/** Parameter für organische Baum-Stützen – aus dem Process-Profil oder mit Defaults. */
+private data class SupportProfile(
+    val tipDiameter: Float,    // mm – schmale Spitze am Modell
+    val branchDiameter: Float, // mm – dicker Stamm am Bett
+    val xyGap: Float           // mm – Abstand der Spitze zum Objekt
+) {
+    companion object { val DEFAULT = SupportProfile(0.8f, 2.0f, 0.15f) }
+}
+
+/** Liest tree_support_*-Werte aus dem ersten Process-Profil; fehlt etwas, greifen Defaults. */
+private fun loadSupportProfile(ctx: android.content.Context): SupportProfile {
+    val def = SupportProfile.DEFAULT
+    val f = profileDir(ctx, "process").listFiles()
+        ?.firstOrNull { it.extension == "json" } ?: return def
+    return try {
+        val o = org.json.JSONObject(f.readText())
+        // Orca speichert Werte als Strings (teils Arrays) – defensiv parsen.
+        fun num(vararg keys: String): Float? {
+            for (k in keys) {
+                val s = o.opt(k) ?: continue
+                val str = when (s) {
+                    is org.json.JSONArray -> if (s.length() > 0) s.optString(0) else null
+                    else -> s.toString()
+                } ?: continue
+                str.trim().removeSuffix("%").toFloatOrNull()?.let { return it }
+            }
+            return null
+        }
+        SupportProfile(
+            tipDiameter = num("tree_support_tip_diameter")?.coerceAtLeast(0.2f) ?: def.tipDiameter,
+            branchDiameter = num("tree_support_branch_diameter")?.coerceAtLeast(0.5f) ?: def.branchDiameter,
+            xyGap = num("support_object_xy_distance", "support_object_first_layer_gap")
+                ?.coerceAtLeast(0f) ?: def.xyGap
+        )
+    } catch (e: Exception) { def }
+}
+
+// ── Projekt-Verwaltung (virtuelles Druckbett mit allem drauf speichern/laden) ─
+
+private fun projectsDir(ctx: android.content.Context) =
+    File(ctx.filesDir, "slicer_projects").apply { mkdirs() }
+
+private fun listProjects(ctx: android.content.Context): List<File> =
+    projectsDir(ctx).listFiles()?.filter { it.extension == "json" }
+        ?.sortedByDescending { it.lastModified() } ?: emptyList()
+
+private fun sanitizeFileName(name: String): String =
+    name.trim().ifBlank { "projekt" }.replace(Regex("[^A-Za-z0-9 _-]"), "_").take(60)
+
+/** Gesamter Bett-Zustand: Modell-Mesh + Transform + Stützpunkte + Kamera. */
+private class SlicerProject(
+    val name: String,
+    val model: StlModel,
+    val modelRot: FloatArray,
+    val scale: Float,
+    val simplify: Int,
+    val az: Float,
+    val el: Float,
+    val zoom: Float,
+    val supports: List<Vec3>
+)
+
+/** Serialisiert den kompletten Bett-Zustand als JSON in filesDir/slicer_projects. */
+private fun saveProject(
+    ctx: android.content.Context,
+    name: String,
+    model: StlModel,
+    rot: FloatArray,
+    scale: Float,
+    simplify: Int,
+    az: Float, el: Float, zoom: Float,
+    supports: List<Vec3>
+): Boolean = try {
+    val o = org.json.JSONObject()
+    o.put("name", name)
+    o.put("scale", scale.toDouble())
+    o.put("simplify", simplify)
+    o.put("az", az.toDouble()); o.put("el", el.toDouble()); o.put("zoom", zoom.toDouble())
+    val rotArr = org.json.JSONArray(); rot.forEach { rotArr.put(it.toDouble()) }
+    o.put("rot", rotArr)
+    val sup = org.json.JSONArray()
+    supports.forEach { v ->
+        sup.put(org.json.JSONArray().put(v.x.toDouble()).put(v.y.toDouble()).put(v.z.toDouble()))
+    }
+    o.put("supports", sup)
+    // Mesh: pro Dreieck die 12 Floats a(xyz) b(xyz) c(xyz) n(xyz).
+    val tris = org.json.JSONArray()
+    for (t in model.tris) {
+        val ta = org.json.JSONArray()
+        floatArrayOf(
+            t.a.x, t.a.y, t.a.z, t.b.x, t.b.y, t.b.z,
+            t.c.x, t.c.y, t.c.z, t.n.x, t.n.y, t.n.z
+        ).forEach { ta.put(it.toDouble()) }
+        tris.put(ta)
+    }
+    o.put("tris", tris)
+    File(projectsDir(ctx), sanitizeFileName(name) + ".json").writeText(o.toString())
+    true
+} catch (e: Exception) { false }
+
+/** Liest einen gespeicherten Bett-Zustand zurück. */
+private fun loadProject(f: File): SlicerProject? = try {
+    val o = org.json.JSONObject(f.readText())
+    val rotArr = o.getJSONArray("rot")
+    val rot = FloatArray(9) { rotArr.getDouble(it).toFloat() }
+    val triArr = o.getJSONArray("tris")
+    val tris = ArrayList<Tri>(triArr.length())
+    for (i in 0 until triArr.length()) {
+        val a = triArr.getJSONArray(i)
+        tris.add(Tri(
+            Vec3(a.getDouble(0).toFloat(), a.getDouble(1).toFloat(), a.getDouble(2).toFloat()),
+            Vec3(a.getDouble(3).toFloat(), a.getDouble(4).toFloat(), a.getDouble(5).toFloat()),
+            Vec3(a.getDouble(6).toFloat(), a.getDouble(7).toFloat(), a.getDouble(8).toFloat()),
+            Vec3(a.getDouble(9).toFloat(), a.getDouble(10).toFloat(), a.getDouble(11).toFloat())
+        ))
+    }
+    if (tris.isEmpty()) return null
+    val sup = o.optJSONArray("supports")
+    val supports = ArrayList<Vec3>()
+    if (sup != null) for (i in 0 until sup.length()) {
+        val s = sup.getJSONArray(i)
+        supports.add(Vec3(s.getDouble(0).toFloat(), s.getDouble(1).toFloat(), s.getDouble(2).toFloat()))
+    }
+    SlicerProject(
+        name = o.optString("name", f.nameWithoutExtension),
+        model = StlModel(tris),
+        modelRot = rot,
+        scale = o.optDouble("scale", 1.0).toFloat(),
+        simplify = o.optInt("simplify", 0),
+        az = o.optDouble("az", 35.0).toFloat(),
+        el = o.optDouble("el", 60.0).toFloat(),
+        zoom = o.optDouble("zoom", 1.0).toFloat(),
+        supports = supports
+    )
+} catch (e: Exception) { null }
 
 @Composable
 fun SlicerScreen(onNavigateBack: () -> Unit) {
@@ -410,12 +579,23 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
     var tool by remember { mutableStateOf(SlicerTool.NONE) }
     var modelRot by remember { mutableStateOf(matIdentity()) }
     var scaleVal by remember { mutableStateOf(1f) }
+    var simplifyLevel by remember { mutableStateOf(0) } // 0 = nicht, 10 = sehr stark vereinfachen
     var az by remember { mutableStateOf(35f) }
     var el by remember { mutableStateOf(60f) }
+    var viewZoom by remember { mutableStateOf(1f) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     val supports = remember { mutableStateListOf<Vec3>() }
+    var supportDelete by remember { mutableStateOf(false) } // im Stützen-Modus: tippen entfernt statt setzt
 
     var showProfiles by remember { mutableStateOf(false) }
+    var showProjectMenu by remember { mutableStateOf(false) }
+    var showSaveDialog by remember { mutableStateOf(false) }
+    var projectsRefresh by remember { mutableStateOf(0) }
+    // Baum-Stützen-Parameter aus dem Process-Profil (nach Dialog-Schließen neu laden).
+    var supportProfile by remember { mutableStateOf(SupportProfile.DEFAULT) }
+    LaunchedEffect(showProfiles) {
+        if (!showProfiles) supportProfile = withContext(Dispatchers.IO) { loadSupportProfile(context) }
+    }
 
     // STL-Picker
     val stlPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -441,17 +621,24 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
             } else {
                 model = parsed
                 modelName = name ?: "modell"
-                modelRot = matIdentity(); scaleVal = 1f; supports.clear()
+                modelRot = matIdentity(); scaleVal = 1f; simplifyLevel = 0; viewZoom = 1f; supports.clear()
             }
         }
     }
 
-    val projection by produceState<Projection?>(null, model, modelRot, scaleVal, az, el, viewport) {
+    // Vereinfachtes Modell (Vertex-Clustering) – nur neu berechnen wenn nötig.
+    val displayModel by produceState<StlModel?>(null, model, simplifyLevel) {
         val m = model
+        value = if (m == null) null
+        else withContext(Dispatchers.Default) { simplifyModel(m, simplifyLevel) }
+    }
+
+    val projection by produceState<Projection?>(null, displayModel, modelRot, scaleVal, az, el, viewZoom, viewport) {
+        val m = displayModel
         if (m == null || viewport.width == 0 || viewport.height == 0) { value = null; return@produceState }
         val rotSnapshot = modelRot.copyOf() // FloatArray vor Background-Zugriff kopieren
         value = withContext(Dispatchers.Default) {
-            computeProjection(m, rotSnapshot, scaleVal, az, el, viewport)
+            computeProjection(m, rotSnapshot, scaleVal, az, el, viewZoom, viewport)
         }
     }
 
@@ -485,6 +672,62 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                 TopBarIcon(Icons.Default.Transform, "Skalieren / Drehen", tool == SlicerTool.TRANSFORM) {
                     tool = if (tool == SlicerTool.TRANSFORM) SlicerTool.NONE else SlicerTool.TRANSFORM
                 }
+                Box {
+                    TopBarIcon(Icons.Default.Save, "Projekte", showProjectMenu) { showProjectMenu = true }
+                    DropdownMenu(
+                        expanded = showProjectMenu,
+                        onDismissRequest = { showProjectMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Projekt speichern") },
+                            enabled = model != null,
+                            leadingIcon = { Icon(Icons.Default.Save, null, modifier = Modifier.size(18.dp)) },
+                            onClick = { showProjectMenu = false; showSaveDialog = true }
+                        )
+                        HorizontalDivider()
+                        Text(
+                            "Projekt laden",
+                            color = OnSurfaceDim,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        )
+                        val projects = key(projectsRefresh) { listProjects(context) }
+                        if (projects.isEmpty()) {
+                            DropdownMenuItem(text = { Text("— keine —", color = OnSurfaceDim) }, enabled = false, onClick = {})
+                        } else {
+                            projects.forEach { f ->
+                                DropdownMenuItem(
+                                    text = { Text(f.nameWithoutExtension, maxLines = 1) },
+                                    trailingIcon = {
+                                        Icon(
+                                            Icons.Default.Delete, "Löschen", tint = ErrorRed,
+                                            modifier = Modifier.size(18.dp).clickable { f.delete(); projectsRefresh++ }
+                                        )
+                                    },
+                                    onClick = {
+                                        showProjectMenu = false
+                                        loading = true
+                                        scope.launch {
+                                            val proj = withContext(Dispatchers.IO) { loadProject(f) }
+                                            loading = false
+                                            if (proj == null) {
+                                                Toast.makeText(context, "Projekt konnte nicht geladen werden", Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                model = proj.model
+                                                modelName = proj.name
+                                                modelRot = proj.modelRot
+                                                scaleVal = proj.scale
+                                                simplifyLevel = proj.simplify
+                                                az = proj.az; el = proj.el; viewZoom = proj.zoom
+                                                supports.clear(); supports.addAll(proj.supports)
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
                 TopBarIcon(Icons.Default.MoreVert, "Profile", showProfiles) { showProfiles = true }
             }
         }
@@ -497,18 +740,39 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                 .background(BackgroundDark)
                 .onSizeChanged { viewport = it }
                 .pointerInput(tool, model) {
-                    detectDragGestures { _, drag ->
-                        // Orbit nur, wenn nicht im Stützen-Modus.
-                        if (tool != SlicerTool.SUPPORT) {
-                            az += drag.x * 0.4f
-                            el = (el + drag.y * 0.4f).coerceIn(5f, 89f)
+                    when (tool) {
+                        SlicerTool.SUPPORT -> { /* kein Orbit/Zoom – Tippen setzt/entfernt Stützen */ }
+                        SlicerTool.NONE -> {
+                            // Kein Werkzeug aktiv: Orbit (Ziehen) + Pinch-Zoom.
+                            detectTransformGestures { _, pan, gestureZoom, _ ->
+                                az += pan.x * 0.4f
+                                el = (el + pan.y * 0.4f).coerceIn(5f, 89f)
+                                viewZoom = (viewZoom * gestureZoom).coerceIn(0.3f, 6f)
+                            }
+                        }
+                        SlicerTool.TRANSFORM -> {
+                            detectDragGestures { _, drag ->
+                                az += drag.x * 0.4f
+                                el = (el + drag.y * 0.4f).coerceIn(5f, 89f)
+                            }
                         }
                     }
                 }
-                .pointerInput(tool, projection) {
+                .pointerInput(tool, supportDelete, projection) {
                     detectTapGestures { offset ->
-                        if (tool == SlicerTool.SUPPORT) {
-                            val proj = projection ?: return@detectTapGestures
+                        if (tool != SlicerTool.SUPPORT) return@detectTapGestures
+                        val proj = projection ?: return@detectTapGestures
+                        if (supportDelete) {
+                            // Nächstgelegene gesetzte Stütze entfernen.
+                            var bestIdx = -1; var bestD = Float.MAX_VALUE
+                            supports.forEachIndexed { i, w ->
+                                val s = proj.worldToScreen(w)
+                                val dx = s.x - offset.x; val dy = s.y - offset.y
+                                val d = dx * dx + dy * dy
+                                if (d < bestD) { bestD = d; bestIdx = i }
+                            }
+                            if (bestIdx >= 0 && bestD < 60f * 60f) supports.removeAt(bestIdx)
+                        } else {
                             // Nächstgelegenen projizierten Dreiecks-Mittelpunkt picken.
                             var best: Vec3? = null; var bestD = Float.MAX_VALUE
                             for ((screen, world) in proj.picks) {
@@ -521,7 +785,7 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                     }
                 }
         ) {
-            SlicerCanvas(projection = projection, supports = supports)
+            SlicerCanvas(projection = projection, supports = supports, supportProfile = supportProfile)
 
             if (model == null && !loading) {
                 Column(
@@ -542,18 +806,29 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                 CircularProgressIndicator(color = AccentYellow, modifier = Modifier.align(Alignment.Center))
             }
 
-            // Stützen-Hinweis
+            // Stützen-Hinweis + Hinzufügen/Löschen-Umschalter
             if (tool == SlicerTool.SUPPORT && model != null) {
-                Text(
-                    "Tippe auf das Modell, um Stützpunkte zu setzen (${supports.size})",
-                    color = Color.Black,
-                    fontSize = 12.sp,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(8.dp)
-                        .background(AccentYellow, RoundedCornerShape(6.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                )
+                Column(
+                    modifier = Modifier.align(Alignment.TopCenter).padding(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        if (supportDelete)
+                            "Tippe auf eine Stütze, um sie zu löschen (${supports.size})"
+                        else
+                            "Tippe auf das Modell, um Stützpunkte zu setzen (${supports.size})",
+                        color = Color.Black,
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .background(AccentYellow, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SupportModeChip("Hinzufügen", !supportDelete) { supportDelete = false }
+                        SupportModeChip("Löschen", supportDelete) { supportDelete = true }
+                    }
+                }
             }
 
             // Transform-Panel
@@ -561,11 +836,13 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                 TransformPanel(
                     scale = scaleVal,
                     onScale = { scaleVal = it; supports.clear() },
+                    simplifyLevel = simplifyLevel,
+                    onSimplify = { simplifyLevel = it; supports.clear() },
                     onRotate = { axis ->
                         val r = rotAxis(axis, (Math.PI / 2).toFloat())
                         modelRot = matMul(r, modelRot); supports.clear()
                     },
-                    onReset = { modelRot = matIdentity(); scaleVal = 1f; supports.clear() },
+                    onReset = { modelRot = matIdentity(); scaleVal = 1f; simplifyLevel = 0; viewZoom = 1f; supports.clear() },
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
@@ -585,7 +862,9 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                     Text(modelName ?: "—", color = OnSurface, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
                     val info = model?.let {
                         val s = it.max - it.min
-                        "${it.tris.size} Flächen · ${"%.0f×%.0f×%.0f".format(s.x * scaleVal, s.y * scaleVal, s.z * scaleVal)} mm"
+                        val faces = displayModel?.tris?.size ?: it.tris.size
+                        val simpl = if (simplifyLevel > 0) " · vereinf. $simplifyLevel" else ""
+                        "$faces Flächen$simpl · ${"%.0f×%.0f×%.0f".format(s.x * scaleVal, s.y * scaleVal, s.z * scaleVal)} mm"
                     } ?: "kein Modell"
                     Text(info, color = OnSurfaceDim, fontSize = 11.sp, maxLines = 1)
                 }
@@ -610,6 +889,65 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
 
     if (showProfiles) {
         ProfilesDialog(onDismiss = { showProfiles = false })
+    }
+
+    if (showSaveDialog) {
+        var projName by remember { mutableStateOf(modelName?.substringBeforeLast('.') ?: "projekt") }
+        AlertDialog(
+            onDismissRequest = { showSaveDialog = false },
+            containerColor = SurfaceDark,
+            title = { Text("Projekt speichern", color = OnSurface) },
+            text = {
+                OutlinedTextField(
+                    value = projName,
+                    onValueChange = { projName = it },
+                    label = { Text("Name") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = projName.isNotBlank(),
+                    onClick = {
+                        val m = model
+                        showSaveDialog = false
+                        if (m != null) scope.launch {
+                            val ok = withContext(Dispatchers.IO) {
+                                saveProject(context, projName, m, modelRot, scaleVal, simplifyLevel, az, el, viewZoom, supports.toList())
+                            }
+                            projectsRefresh++
+                            Toast.makeText(
+                                context,
+                                if (ok) "Projekt gespeichert" else "Speichern fehlgeschlagen",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                ) { Text("Speichern", color = AccentYellow) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveDialog = false }) { Text("Abbrechen", color = OnSurfaceDim) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SupportModeChip(label: String, active: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (active) AccentYellow else SurfaceDark)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            color = if (active) Color.Black else OnSurface,
+            fontSize = 12.sp,
+            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal
+        )
     }
 }
 
@@ -642,8 +980,64 @@ private fun TopBarIcon(
     }
 }
 
+// Ein Segment einer Baum-Stütze in Weltkoordinaten (mit mm-Radien an beiden Enden).
+private class TreeSeg(val a: Vec3, val rA: Float, val b: Vec3, val rB: Float)
+
+/**
+ * Baut aus den gesetzten Stützpunkten organische Bäume: nahe Spitzen teilen sich
+ * einen gemeinsamen Stamm (unten dick = branchDiameter), Äste verjüngen sich nach
+ * oben auf tipDiameter und enden xyGap unter der Modelloberfläche.
+ */
+private fun buildTreeSupports(tips: List<Vec3>, p: SupportProfile): List<TreeSeg> {
+    if (tips.isEmpty()) return emptyList()
+    val tipR = p.tipDiameter / 2f
+    val branchR = p.branchDiameter / 2f
+    val mergeDist = (p.branchDiameter * 4f).coerceIn(8f, 25f) // mm – ab hier teilen sich Äste einen Stamm
+
+    // Spitzen nach XY-Nähe clustern (einfaches Greedy-Clustering).
+    val remaining = tips.toMutableList()
+    val clusters = ArrayList<MutableList<Vec3>>()
+    while (remaining.isNotEmpty()) {
+        val seed = remaining.removeAt(remaining.size - 1)
+        val cl = mutableListOf(seed)
+        val it = remaining.iterator()
+        while (it.hasNext()) {
+            val v = it.next()
+            if (cl.any { c -> sqrt((c.x - v.x) * (c.x - v.x) + (c.y - v.y) * (c.y - v.y)) < mergeDist }) {
+                cl.add(v); it.remove()
+            }
+        }
+        clusters.add(cl)
+    }
+
+    val segs = ArrayList<TreeSeg>()
+    for (cl in clusters) {
+        val cx = cl.map { it.x }.average().toFloat()
+        val cy = cl.map { it.y }.average().toFloat()
+        val minZ = cl.minOf { it.z }
+        val base = Vec3(cx, cy, 0f)
+        if (cl.size == 1) {
+            // Einzelne Spitze: ein durchgehender, sich verjüngender Ast vom Bett zum Ziel.
+            val tip = cl[0]
+            val top = Vec3(tip.x, tip.y, (tip.z - p.xyGap).coerceAtLeast(0f))
+            segs.add(TreeSeg(base, branchR, top, tipR))
+        } else {
+            // Stamm bis zur Gabelhöhe, dann je ein Ast pro Spitze.
+            val forkZ = (minZ * 0.4f).coerceAtLeast(0.5f)
+            val fork = Vec3(cx, cy, forkZ)
+            val midR = (branchR * 0.7f).coerceAtLeast(tipR)
+            segs.add(TreeSeg(base, branchR, fork, midR))
+            for (tip in cl) {
+                val top = Vec3(tip.x, tip.y, (tip.z - p.xyGap).coerceAtLeast(forkZ))
+                segs.add(TreeSeg(fork, midR, top, tipR))
+            }
+        }
+    }
+    return segs
+}
+
 @Composable
-private fun SlicerCanvas(projection: Projection?, supports: List<Vec3>) {
+private fun SlicerCanvas(projection: Projection?, supports: List<Vec3>, supportProfile: SupportProfile) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         // Druckbett-Gitter (XY-Ebene, z=0).
         val grid = AccentYellow.copy(alpha = 0.16f)
@@ -674,14 +1068,28 @@ private fun SlicerCanvas(projection: Projection?, supports: List<Vec3>) {
                 drawPath(path, t.color)
             }
 
-            // Stützen als kleine organische Bäume zeichnen.
-            for (sp in supports) {
-                val top = proj.worldToScreen(sp)
-                val base = proj.worldToScreen(Vec3(sp.x, sp.y, 0f))
-                drawLine(Color(0xFF66D9FF), base, top, strokeWidth = 3f)
-                // zwei kleine Verzweigungen oben
-                drawLine(Color(0xFF66D9FF), top, Offset(top.x - 9f, top.y - 7f), strokeWidth = 2f)
-                drawLine(Color(0xFF66D9FF), top, Offset(top.x + 9f, top.y - 7f), strokeWidth = 2f)
+            // Organische Baum-Stützen: unten dick, nach oben auf Tip-Durchmesser
+            // verjüngt, hohl gezeichnet (durchscheinende Füllung + Kanten).
+            val trunkColor = Color(0xFF66D9FF)
+            for (seg in buildTreeSupports(supports, supportProfile)) {
+                val s0 = proj.worldToScreen(seg.a); val s1 = proj.worldToScreen(seg.b)
+                // mm-Radius → Bildschirm-Halbbreite (Mindestbreite, damit sichtbar).
+                val w0 = (seg.rA * proj.pxPerMm).coerceAtLeast(1.5f)
+                val w1 = (seg.rB * proj.pxPerMm).coerceAtLeast(1f)
+                val dir = s1 - s0
+                val len = sqrt(dir.x * dir.x + dir.y * dir.y)
+                if (len < 0.01f) continue
+                val nx = -dir.y / len; val ny = dir.x / len
+                val a = Offset(s0.x + nx * w0, s0.y + ny * w0)
+                val b = Offset(s0.x - nx * w0, s0.y - ny * w0)
+                val c = Offset(s1.x - nx * w1, s1.y - ny * w1)
+                val d = Offset(s1.x + nx * w1, s1.y + ny * w1)
+                val tube = Path().apply {
+                    moveTo(a.x, a.y); lineTo(b.x, b.y); lineTo(c.x, c.y); lineTo(d.x, d.y); close()
+                }
+                drawPath(tube, trunkColor.copy(alpha = 0.16f)) // hohle Innenfläche
+                drawLine(trunkColor, a, d, strokeWidth = 1.6f) // Außenkanten
+                drawLine(trunkColor, b, c, strokeWidth = 1.6f)
             }
         }
     }
@@ -691,6 +1099,8 @@ private fun SlicerCanvas(projection: Projection?, supports: List<Vec3>) {
 private fun TransformPanel(
     scale: Float,
     onScale: (Float) -> Unit,
+    simplifyLevel: Int,
+    onSimplify: (Int) -> Unit,
     onRotate: (Vec3) -> Unit,
     onReset: () -> Unit,
     modifier: Modifier = Modifier
@@ -711,6 +1121,17 @@ private fun TransformPanel(
                 value = scale,
                 onValueChange = onScale,
                 valueRange = 0.1f..3f,
+                colors = SliderDefaults.colors(thumbColor = AccentYellow, activeTrackColor = AccentYellow)
+            )
+            Text(
+                "Vereinfachung: " + if (simplifyLevel == 0) "aus" else "$simplifyLevel / 10",
+                color = OnSurface, fontSize = 13.sp
+            )
+            Slider(
+                value = simplifyLevel.toFloat(),
+                onValueChange = { onSimplify(it.toInt().coerceIn(0, 10)) },
+                valueRange = 0f..10f,
+                steps = 9,
                 colors = SliderDefaults.colors(thumbColor = AccentYellow, activeTrackColor = AccentYellow)
             )
             Text("Drehen (90°-Schritte)", color = OnSurfaceDim, fontSize = 11.sp)
