@@ -16,6 +16,7 @@
     <application
         android:name=".KlipperRemoteApp"
         android:allowBackup="true"
+        android:largeHeap="true"
         android:label="KlipperRemote"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"

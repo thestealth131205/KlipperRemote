@@ -36,7 +36,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -342,10 +341,15 @@ private fun autoAlignRotation(model: StlModel): FloatArray {
 
 // ── projizierte Geometrie (für Zeichnen + Picking) ───────────────────────────
 
-private class ProjTri(val p0: Offset, val p1: Offset, val p2: Offset, val depth: Float, val color: Color)
+// Projektion in primitiven Arrays statt ~450k Objekten (ProjTri/Pair/Vec3) – das frühere
+// objektbasierte Design sprengte bei großen Meshes den Heap (OutOfMemoryError).
 private class Projection(
-    val tris: List<ProjTri>,
-    val picks: List<Pair<Offset, Vec3>>, // Bildschirm-Centroid -> Welt-Centroid
+    val triXY: FloatArray,   // 6 Floats je Dreieck: p0x,p0y,p1x,p1y,p2x,p2y
+    val triColor: IntArray,  // ARGB je Dreieck
+    val order: IntArray,     // Dreiecks-Indizes hinten→vorne (Painter's algorithm)
+    val triCount: Int,
+    val pickSX: FloatArray, val pickSY: FloatArray,                  // Bildschirm-Centroid
+    val pickWX: FloatArray, val pickWY: FloatArray, val pickWZ: FloatArray, // Welt-Centroid
     val worldToScreen: (Vec3) -> Offset,
     val pxPerMm: Float                    // orthografischer Maßstab (für Stützen-Dicke)
 )
@@ -366,23 +370,21 @@ private fun computeProjection(
 
     // ALLE Dreiecke rendern – Ausdünnen riss Löcher ins Mesh (sah aus wie Drahtgitter).
     val renderTris = model.tris
+    val n = renderTris.size
 
-    // 1) Modell rotieren+skalieren (um Modellmittelpunkt), dann auf Bett absenken & zentrieren.
-    val transformed = ArrayList<Triple<Vec3, Vec3, Vec3>>(renderTris.size)
-    val normals = ArrayList<Vec3>(renderTris.size)
-    var mnz = Float.MAX_VALUE
-    var sumX = 0f; var sumY = 0f; var cnt = 0
     fun tf(v: Vec3) = matVec(modelRot, (v - model.center)) * scale
+
+    // 1) Absenk-/Zentrier-Offset bestimmen, OHNE die transformierten Vertices zu speichern.
+    //    (Das frühere Zwischen-Array mit ~450k Triple<Vec3> + Normalen sprengte den Heap → OOM.)
+    var mnz = Float.MAX_VALUE
+    var sumX = 0f; var sumY = 0f
     for (t in renderTris) {
         val a = tf(t.a); val b = tf(t.b); val c = tf(t.c)
-        transformed.add(Triple(a, b, c))
-        normals.add(matVec(modelRot, t.n).normalized())
         mnz = min(mnz, min(a.z, min(b.z, c.z)))
-        sumX += a.x + b.x + c.x; sumY += a.y + b.y + c.y; cnt += 3
+        sumX += a.x + b.x + c.x; sumY += a.y + b.y + c.y
     }
-    val shiftX = if (cnt > 0) sumX / cnt else 0f
-    val shiftY = if (cnt > 0) sumY / cnt else 0f
-    val drop = Vec3(-shiftX, -shiftY, -mnz)
+    val cnt = n * 3
+    val drop = Vec3(-sumX / cnt, -sumY / cnt, -mnz)
 
     // 2) Kamera-Orbit (Azimut um Z, dann Elevation um X).
     val az = Math.toRadians(azDeg.toDouble()).toFloat()
@@ -404,27 +406,51 @@ private fun computeProjection(
     val worldToScreen: (Vec3) -> Offset = { project(it).first }
 
     val light = Vec3(-0.35f, -0.45f, 0.82f).normalized()
-    val projTris = ArrayList<ProjTri>(transformed.size)
-    val picks = ArrayList<Pair<Offset, Vec3>>(transformed.size)
-    for (i in transformed.indices) {
-        val (a0, b0, c0) = transformed[i]
-        val a = a0 + drop; val b = b0 + drop; val c = c0 + drop
+
+    // Ergebnis in primitiven Arrays halten – kein Objekt pro Dreieck.
+    val triXY = FloatArray(n * 6)
+    val triColor = IntArray(n)
+    val pickSX = FloatArray(n); val pickSY = FloatArray(n)
+    val pickWX = FloatArray(n); val pickWY = FloatArray(n); val pickWZ = FloatArray(n)
+    val keys = LongArray(n) // Tiefe(32 Bit, sortierbar) | Index(32 Bit) → Painter-Sort ohne Boxing
+
+    var i = 0
+    for (t in renderTris) {
+        val a = tf(t.a) + drop; val b = tf(t.b) + drop; val c = tf(t.c) + drop
         val (pa, da) = project(a); val (pb, db) = project(b); val (pc, dc) = project(c)
         val depth = (da + db + dc) / 3f
-        val shade = (0.25f + 0.75f * max(0f, normals[i].dot(light))).coerceIn(0f, 1f)
-        val col = Color(
-            red = 0.12f + 0.75f * shade,
-            green = 0.55f + 0.40f * shade,
-            blue = 0.05f + 0.20f * shade
+        val nrm = matVec(modelRot, t.n).normalized()
+        val shade = (0.25f + 0.75f * max(0f, nrm.dot(light))).coerceIn(0f, 1f)
+        val col = android.graphics.Color.rgb(
+            ((0.12f + 0.75f * shade) * 255f).toInt().coerceIn(0, 255),
+            ((0.55f + 0.40f * shade) * 255f).toInt().coerceIn(0, 255),
+            ((0.05f + 0.20f * shade) * 255f).toInt().coerceIn(0, 255)
         )
-        projTris.add(ProjTri(pa, pb, pc, depth, col))
-        val centroidWorld = (a + b + c) * (1f / 3f)
-        val centroidScreen = Offset((pa.x + pb.x + pc.x) / 3f, (pa.y + pb.y + pc.y) / 3f)
-        picks.add(centroidScreen to centroidWorld)
+        val o = i * 6
+        triXY[o] = pa.x; triXY[o + 1] = pa.y
+        triXY[o + 2] = pb.x; triXY[o + 3] = pb.y
+        triXY[o + 4] = pc.x; triXY[o + 5] = pc.y
+        triColor[i] = col
+        pickSX[i] = (pa.x + pb.x + pc.x) / 3f
+        pickSY[i] = (pa.y + pb.y + pc.y) / 3f
+        pickWX[i] = (a.x + b.x + c.x) / 3f
+        pickWY[i] = (a.y + b.y + c.y) / 3f
+        pickWZ[i] = (a.z + b.z + c.z) / 3f
+        val bits = java.lang.Float.floatToRawIntBits(depth)
+        val sortable = bits xor ((bits shr 31) or Int.MIN_VALUE) // monoton: größerer Float → größerer Int
+        keys[i] = (sortable.toLong() shl 32) or (i.toLong() and 0xFFFFFFFFL)
+        i++
     }
-    // Painter's algorithm: hinten zuerst (großes depth zuerst).
-    projTris.sortByDescending { it.depth }
-    return Projection(projTris, picks, worldToScreen, zoom)
+    // Painter's algorithm: großes depth (hinten) zuerst zeichnen.
+    keys.sort() // aufsteigend nach Tiefe; größte Tiefe steht hinten → beim Befüllen umkehren.
+    val order = IntArray(n)
+    for (k in 0 until n) order[k] = (keys[n - 1 - k] and 0xFFFFFFFFL).toInt()
+
+    return Projection(
+        triXY, triColor, order, n,
+        pickSX, pickSY, pickWX, pickWY, pickWZ,
+        worldToScreen, zoom
+    )
 }
 
 /**
@@ -442,13 +468,15 @@ private fun renderModelBitmap(proj: Projection, width: Int, height: Int): ImageB
         style = android.graphics.Paint.Style.FILL
     }
     val path = android.graphics.Path()
-    for (t in proj.tris) {
+    val xy = proj.triXY
+    for (idx in proj.order) {
+        val o = idx * 6
         path.rewind()
-        path.moveTo(t.p0.x, t.p0.y)
-        path.lineTo(t.p1.x, t.p1.y)
-        path.lineTo(t.p2.x, t.p2.y)
+        path.moveTo(xy[o], xy[o + 1])
+        path.lineTo(xy[o + 2], xy[o + 3])
+        path.lineTo(xy[o + 4], xy[o + 5])
         path.close()
-        paint.color = t.color.toArgb()
+        paint.color = proj.triColor[idx]
         canvas.drawPath(path, paint)
     }
     return bmp.asImageBitmap()
@@ -818,10 +846,10 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                         } else {
                             // Nächstgelegenen projizierten Dreiecks-Mittelpunkt picken.
                             var best: Vec3? = null; var bestD = Float.MAX_VALUE
-                            for ((screen, world) in proj.picks) {
-                                val dx = screen.x - offset.x; val dy = screen.y - offset.y
+                            for (k in 0 until proj.triCount) {
+                                val dx = proj.pickSX[k] - offset.x; val dy = proj.pickSY[k] - offset.y
                                 val d = dx * dx + dy * dy
-                                if (d < bestD) { bestD = d; best = world }
+                                if (d < bestD) { bestD = d; best = Vec3(proj.pickWX[k], proj.pickWY[k], proj.pickWZ[k]) }
                             }
                             if (best != null && bestD < 60f * 60f) supports.add(best)
                         }
