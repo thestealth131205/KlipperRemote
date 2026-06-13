@@ -285,6 +285,12 @@ private fun parse3mf(bytes: ByteArray): StlModel? {
     return if (tris.isEmpty()) null else StlModel(tris)
 }
 
+/** Skaliert die komplette Geometrie um einen Faktor (Normalen bleiben bei uniformer Skalierung gleich). */
+private fun scaleModel(model: StlModel, f: Float): StlModel {
+    if (f == 1f || model.tris.isEmpty()) return model
+    return StlModel(model.tris.map { Tri(it.a * f, it.b * f, it.c * f, it.n) })
+}
+
 /**
  * Vereinfacht das Mesh per Vertex-Clustering: Vertices werden auf ein Gitter
  * gerundet, dadurch fallen benachbarte Punkte zusammen und Dreiecke kollabieren.
@@ -671,10 +677,24 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                     }
                 } catch (e: Exception) { null }
             }
+            var autoScaledTo: Float? = null
             val parsed = withContext(Dispatchers.IO) {
-                try {
+                val m = try {
                     context.contentResolver.openInputStream(uri)?.use { it.readBytes() }?.let { parseModel(it, name) }
-                } catch (e: Exception) { null }
+                } catch (e: Exception) { null } ?: return@withContext null
+                // OBJ ist einheitenlos – manche Exporte liefern winzige (z. B. Meter/Dezimeter)
+                // oder riesige Koordinaten. Solche Modelle würden als Punkt bzw. weit außerhalb
+                // des Betts erscheinen und ließen sich mit dem 0,1–3×-Regler nicht korrigieren.
+                // Daher unplausible OBJ-Größen beim Laden aufs Bett normalisieren (in die Geometrie
+                // eingerechnet → Maße, Regler und Stützen arbeiten danach wieder normal in mm).
+                val ext = m.max - m.min
+                val maxDim = max(ext.x, max(ext.y, ext.z))
+                val isObj = name?.substringAfterLast('.', "")?.lowercase() == "obj"
+                if (isObj && maxDim > 1e-4f && (maxDim < 10f || maxDim > BED_X * 1.5f)) {
+                    val factor = (min(BED_X, BED_Y) * 0.8f) / maxDim
+                    autoScaledTo = factor
+                    scaleModel(m, factor)
+                } else m
             }
             loading = false
             if (parsed == null) {
@@ -683,6 +703,9 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                 model = parsed
                 modelName = name ?: "modell"
                 modelRot = matIdentity(); scaleVal = 1f; simplifyLevel = 0; viewZoom = 1f; supports.clear()
+                if (autoScaledTo != null) {
+                    Toast.makeText(context, "OBJ ohne Maßeinheit – automatisch aufs Bett skaliert. Größe im Skalieren-Werkzeug anpassbar.", Toast.LENGTH_LONG).show()
+                }
                 showSimplifyDialog = true
             }
         }
