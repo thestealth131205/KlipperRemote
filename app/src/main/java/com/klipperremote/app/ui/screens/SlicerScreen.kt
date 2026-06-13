@@ -501,7 +501,7 @@ private data class SupportProfile(
     val branchDiameter: Float, // mm – dicker Stamm am Bett
     val xyGap: Float           // mm – Abstand der Spitze zum Objekt
 ) {
-    companion object { val DEFAULT = SupportProfile(0.8f, 2.0f, 0.15f) }
+    companion object { val DEFAULT = SupportProfile(0.8f, 4.0f, 1.0f) }
 }
 
 /** Liest tree_support_*-Werte aus dem ersten Process-Profil; fehlt etwas, greifen Defaults. */
@@ -527,7 +527,7 @@ private fun loadSupportProfile(ctx: android.content.Context): SupportProfile {
             tipDiameter = num("tree_support_tip_diameter")?.coerceAtLeast(0.2f) ?: def.tipDiameter,
             branchDiameter = num("tree_support_branch_diameter")?.coerceAtLeast(0.5f) ?: def.branchDiameter,
             xyGap = num("support_object_xy_distance", "support_object_first_layer_gap")
-                ?.coerceAtLeast(0f) ?: def.xyGap
+                ?.coerceAtLeast(1.0f) ?: def.xyGap
         )
     } catch (e: Exception) { def }
 }
@@ -662,6 +662,21 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
     var supportProfile by remember { mutableStateOf(SupportProfile.DEFAULT) }
     LaunchedEffect(showProfiles) {
         if (!showProfiles) supportProfile = withContext(Dispatchers.IO) { loadSupportProfile(context) }
+    }
+
+    // Kollisionsgitter: wird im Hintergrund gebaut sobald Modell/Rotation/Skalierung sich ändert.
+    var collider by remember { mutableStateOf<SupportCollider?>(null) }
+    // Stützen-Segmente: werden neu berechnet wenn Stützen, Gitter oder Profil sich ändern.
+    var treeSegs by remember { mutableStateOf<List<TreeSeg>>(emptyList()) }
+    LaunchedEffect(model, modelRot, scaleVal) {
+        val m = model ?: run { collider = null; return@LaunchedEffect }
+        collider = withContext(Dispatchers.Default) { buildSupportCollider(m, modelRot, scaleVal) }
+    }
+    val supportsSnapshot = supports.toList()
+    LaunchedEffect(supportsSnapshot, collider, supportProfile) {
+        treeSegs = withContext(Dispatchers.Default) {
+            buildTreeSupports(supportsSnapshot, collider, supportProfile)
+        }
     }
 
     // STL-Picker
@@ -903,7 +918,7 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                     }
                 }
         ) {
-            SlicerCanvas(projection = projection, modelBitmap = modelBitmap, supports = supports, supportProfile = supportProfile)
+            SlicerCanvas(projection = projection, modelBitmap = modelBitmap, treeSegs = treeSegs)
 
             // Maße oben links (grau, untereinander) zum geladenen Modell.
             modelDims?.let { (w, d, h) ->
@@ -1152,18 +1167,181 @@ private fun TopBarIcon(
 // Ein Segment einer Baum-Stütze in Weltkoordinaten (mit mm-Radien an beiden Enden).
 private class TreeSeg(val a: Vec3, val rA: Float, val b: Vec3, val rB: Float)
 
+// ── Stützen-Kollisionsgitter ─────────────────────────────────────────────────
+
 /**
- * Baut aus den gesetzten Stützpunkten organische Bäume: nahe Spitzen teilen sich
- * einen gemeinsamen Stamm (unten dick = branchDiameter), Äste verjüngen sich nach
- * oben auf tipDiameter und enden xyGap unter der Modelloberfläche.
+ * 3-D-Belegungsgitter: markiert alle Zellen, die Modell-Geometrie enthalten.
+ * Ermöglicht O(1)-Kollisionsprüfung und freie Säulensuche für Stützen-Routing.
  */
-private fun buildTreeSupports(tips: List<Vec3>, p: SupportProfile): List<TreeSeg> {
+private class SupportCollider(
+    val xyCell: Float, val zCell: Float,
+    val ofsX: Float, val ofsY: Float,
+    val nx: Int, val ny: Int, val nz: Int,
+    val grid: BooleanArray   // [zi*ny*nx + yi*nx + xi]
+) {
+    fun isOccupiedAt(x: Float, y: Float, z: Float): Boolean {
+        val xi = ((x - ofsX) / xyCell).toInt()
+        val yi = ((y - ofsY) / xyCell).toInt()
+        val zi = (z / zCell).toInt()
+        if (xi < 0 || xi >= nx || yi < 0 || yi >= ny || zi < 0 || zi >= nz) return false
+        return grid[zi * ny * nx + yi * nx + xi]
+    }
+
+    /**
+     * Scannt von fromZ abwärts; gibt Z zurück wo das Modell nach dem Verlassen
+     * der Ausgangs-Oberfläche (Spitzenauflage) erneut auftaucht = Hindernis-Oberkante.
+     */
+    fun firstBlockBelow(x: Float, y: Float, fromZ: Float): Float? {
+        var z = fromZ - zCell
+        var exitedSurface = false
+        while (z > zCell) {
+            val occ = isOccupiedAt(x, y, z)
+            if (exitedSurface) { if (occ) return z } else { if (!occ) exitedSurface = true }
+            z -= zCell
+        }
+        return null
+    }
+
+    /** True wenn die vertikale Säule an (x,y) von z≈0 bis zMax vollständig frei ist. */
+    private fun isColumnClear(x: Float, y: Float, zMax: Float): Boolean {
+        var z = zCell * 0.5f
+        while (z <= zMax + zCell) {
+            if (isOccupiedAt(x, y, z)) return false
+            z += zCell
+        }
+        return true
+    }
+
+    /**
+     * Sucht den nächstgelegenen freien XY-Punkt für eine Säule von 0 bis zMax.
+     * Bevorzugt Richtung weg vom Modellzentrum (Ursprung in Welt-Koordinaten).
+     */
+    fun findClearColumnXY(sx: Float, sy: Float, zMax: Float): Pair<Float, Float>? {
+        val len = sqrt(sx * sx + sy * sy)
+        val ox = if (len > 0.01f) sx / len else 1f
+        val oy = if (len > 0.01f) sy / len else 0f
+        val sq2 = sqrt(2f) / 2f
+        // 8 Richtungen, sortiert: zuerst auswärts, dann ±45°, ±90°, ±135°, innen
+        val dirs = listOf(
+            ox to oy,
+            (ox - oy) * sq2 to (ox + oy) * sq2,
+            (ox + oy) * sq2 to (-ox + oy) * sq2,
+            -oy to ox, oy to -ox,
+            (-ox - oy) * sq2 to (ox - oy) * sq2,
+            (-ox + oy) * sq2 to (-ox - oy) * sq2,
+            -ox to -oy
+        )
+        for (step in 1..60) {
+            val dist = step * xyCell
+            for ((dx, dy) in dirs) {
+                if (isColumnClear(sx + dx * dist, sy + dy * dist, zMax)) return (sx + dx * dist) to (sy + dy * dist)
+            }
+        }
+        return null
+    }
+}
+
+/** Baut das 3-D-Belegungsgitter aus dem transformierten Modell (Hintergrund-Thread!). */
+private fun buildSupportCollider(
+    model: StlModel, modelRot: FloatArray, scale: Float,
+    xyCell: Float = 2f, zCell: Float = 3f
+): SupportCollider {
+    fun tf(v: Vec3) = matVec(modelRot, v - model.center) * scale
+    // Pass 1: Drop-Offset berechnen (identisch zu computeProjection)
+    var mnz = Float.MAX_VALUE; var sumX = 0f; var sumY = 0f
+    for (t in model.tris) {
+        val a = tf(t.a); val b = tf(t.b); val c = tf(t.c)
+        mnz = min(mnz, min(a.z, min(b.z, c.z)))
+        sumX += a.x + b.x + c.x; sumY += a.y + b.y + c.y
+    }
+    val cnt = model.tris.size * 3
+    val drop = Vec3(-sumX / cnt, -sumY / cnt, -mnz)
+    // Gitter-Dimensionen (bettbezogen; etwas größer als Druckbett)
+    val ofsX = -BED_X * 0.7f; val ofsY = -BED_Y * 0.7f
+    val nx = (BED_X * 1.4f / xyCell).toInt() + 1
+    val ny = (BED_Y * 1.4f / xyCell).toInt() + 1
+    val modelExt = model.max - model.min
+    val maxH = max(modelExt.x, max(modelExt.y, modelExt.z)) * scale * 1.3f + 20f
+    val nz = (maxH / zCell).toInt() + 2
+    val grid = BooleanArray(nx * ny * nz)
+    // Pass 2: Dreiecke ins Gitter eintragen (konservative AABB-Rasterisierung)
+    for (t in model.tris) {
+        val a = tf(t.a) + drop; val b = tf(t.b) + drop; val c = tf(t.c) + drop
+        val xiLo = max(0, ((min(a.x, min(b.x, c.x)) - ofsX) / xyCell).toInt())
+        val xiHi = min(nx - 1, ((max(a.x, max(b.x, c.x)) - ofsX) / xyCell).toInt() + 1)
+        val yiLo = max(0, ((min(a.y, min(b.y, c.y)) - ofsY) / xyCell).toInt())
+        val yiHi = min(ny - 1, ((max(a.y, max(b.y, c.y)) - ofsY) / xyCell).toInt() + 1)
+        val ziLo = max(0, (min(a.z, min(b.z, c.z)) / zCell).toInt())
+        val ziHi = min(nz - 1, (max(a.z, max(b.z, c.z)) / zCell).toInt() + 1)
+        for (zi in ziLo..ziHi) for (yi in yiLo..yiHi) for (xi in xiLo..xiHi) {
+            grid[zi * ny * nx + yi * nx + xi] = true
+        }
+    }
+    return SupportCollider(xyCell, zCell, ofsX, ofsY, nx, ny, nz, grid)
+}
+
+/**
+ * Berechnet den optimalen Stützen-Weg von der Spitze zum Druckbett.
+ * Erkennt Hindernisse unterhalb und biegt den Weg seitlich darum herum.
+ */
+private fun routeSupportPath(tip: Vec3, collider: SupportCollider?, p: SupportProfile): List<Vec3> {
+    val anchorZ = (tip.z - p.xyGap).coerceAtLeast(0f)
+    val anchor = Vec3(tip.x, tip.y, anchorZ)
+    if (collider == null || anchorZ <= 0f) return listOf(anchor, Vec3(tip.x, tip.y, 0f))
+    // Hindernis unterhalb der Spitzenaufhängung suchen
+    val blockZ = collider.firstBlockBelow(tip.x, tip.y, anchorZ)
+        ?: return listOf(anchor, Vec3(tip.x, tip.y, 0f))   // freie Bahn → gerade
+    // Biegepunkt: knapp über dem Hindernis
+    val bendZ = (blockZ + p.xyGap * 2f).coerceIn(0f, anchorZ - p.xyGap)
+    // Freie vertikale Säule neben dem Hindernis suchen
+    val (cx, cy) = collider.findClearColumnXY(tip.x, tip.y, blockZ)
+        ?: return listOf(anchor, Vec3(tip.x, tip.y, 0f))   // Fallback gerade
+    // Diagonaler Übergangspunkt auf halber Hindernishöhe
+    val midZ = (blockZ * 0.5f).coerceAtLeast(collider.zCell)
+    return listOf(anchor, Vec3(tip.x, tip.y, bendZ), Vec3(cx, cy, midZ), Vec3(cx, cy, 0f))
+}
+
+/** Glättet Eckpunkte einer Wegpunkt-Liste zu sanften quadratischen Bezier-Bögen. */
+private fun smoothSupportPath(pts: List<Vec3>, cornerR: Float = 5f): List<Vec3> {
+    if (pts.size < 3) return pts
+    val out = ArrayList<Vec3>(pts.size * 6); out.add(pts.first())
+    for (i in 1 until pts.size - 1) {
+        val prev = pts[i - 1]; val curr = pts[i]; val next = pts[i + 1]
+        val d0 = (curr - prev).length(); val d1 = (next - curr).length()
+        if (d0 < 0.01f || d1 < 0.01f) { out.add(curr); continue }
+        val pS = prev + (curr - prev) * (1f - (cornerR / d0).coerceAtMost(0.45f))
+        val pE = curr + (next - curr) * (cornerR / d1).coerceAtMost(0.45f)
+        for (s in 0..7) {
+            val t = s / 7f
+            out.add(pS * ((1 - t) * (1 - t)) + curr * (2 * (1 - t) * t) + pE * (t * t))
+        }
+    }
+    out.add(pts.last()); return out
+}
+
+/** Wandelt Wegpunkte in TreeSegs um; Radius verläuft von baseR (Bett) nach tipR (Spitze). */
+private fun pathToTreeSegs(path: List<Vec3>, baseR: Float, tipR: Float): List<TreeSeg> {
+    if (path.size < 2) return emptyList()
+    val topZ = path.maxOf { it.z }.coerceAtLeast(0.1f)
+    return (0 until path.size - 1).map { i ->
+        val p0 = path[i]; val p1 = path[i + 1]
+        val r0 = (baseR + (tipR - baseR) * (p0.z / topZ)).coerceAtLeast(tipR)
+        val r1 = (baseR + (tipR - baseR) * (p1.z / topZ)).coerceAtLeast(tipR)
+        TreeSeg(p0, r0, p1, r1)
+    }
+}
+
+/**
+ * Baut aus den gesetzten Stützpunkten organische Bäume mit Kollisionserkennung:
+ * Stützen weichen Hindernissen aus und biegen sich mit sanften Radien zum Bett.
+ */
+private fun buildTreeSupports(tips: List<Vec3>, collider: SupportCollider?, p: SupportProfile): List<TreeSeg> {
     if (tips.isEmpty()) return emptyList()
     val tipR = p.tipDiameter / 2f
     val branchR = p.branchDiameter / 2f
-    val mergeDist = (p.branchDiameter * 4f).coerceIn(8f, 25f) // mm – ab hier teilen sich Äste einen Stamm
+    val mergeDist = (p.branchDiameter * 4f).coerceIn(8f, 25f)
 
-    // Spitzen nach XY-Nähe clustern (einfaches Greedy-Clustering).
+    // Greedy-Clustering: nahe Spitzen teilen sich einen gemeinsamen Stamm
     val remaining = tips.toMutableList()
     val clusters = ArrayList<MutableList<Vec3>>()
     while (remaining.isNotEmpty()) {
@@ -1181,21 +1359,18 @@ private fun buildTreeSupports(tips: List<Vec3>, p: SupportProfile): List<TreeSeg
 
     val segs = ArrayList<TreeSeg>()
     for (cl in clusters) {
-        val cx = cl.map { it.x }.average().toFloat()
-        val cy = cl.map { it.y }.average().toFloat()
-        val minZ = cl.minOf { it.z }
-        val base = Vec3(cx, cy, 0f)
         if (cl.size == 1) {
-            // Einzelne Spitze: ein durchgehender, sich verjüngender Ast vom Bett zum Ziel.
-            val tip = cl[0]
-            val top = Vec3(tip.x, tip.y, (tip.z - p.xyGap).coerceAtLeast(0f))
-            segs.add(TreeSeg(base, branchR, top, tipR))
+            // Einzelne Spitze: Kollisionserkennung + Routing + Glättung
+            val path = routeSupportPath(cl[0], collider, p)
+            segs.addAll(pathToTreeSegs(smoothSupportPath(path, 5f), branchR, tipR))
         } else {
-            // Stamm bis zur Gabelhöhe, dann je ein Ast pro Spitze.
-            val forkZ = (minZ * 0.4f).coerceAtLeast(0.5f)
+            // Mehrere Spitzen: gemeinsamer Stamm bis zur Gabelhöhe (gerade)
+            val cx = cl.map { it.x }.average().toFloat()
+            val cy = cl.map { it.y }.average().toFloat()
+            val forkZ = (cl.minOf { it.z } * 0.4f).coerceAtLeast(0.5f)
             val fork = Vec3(cx, cy, forkZ)
             val midR = (branchR * 0.7f).coerceAtLeast(tipR)
-            segs.add(TreeSeg(base, branchR, fork, midR))
+            segs.add(TreeSeg(Vec3(cx, cy, 0f), branchR, fork, midR))
             for (tip in cl) {
                 val top = Vec3(tip.x, tip.y, (tip.z - p.xyGap).coerceAtLeast(forkZ))
                 segs.add(TreeSeg(fork, midR, top, tipR))
@@ -1206,7 +1381,7 @@ private fun buildTreeSupports(tips: List<Vec3>, p: SupportProfile): List<TreeSeg
 }
 
 @Composable
-private fun SlicerCanvas(projection: Projection?, modelBitmap: ImageBitmap?, supports: List<Vec3>, supportProfile: SupportProfile) {
+private fun SlicerCanvas(projection: Projection?, modelBitmap: ImageBitmap?, treeSegs: List<TreeSeg>) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         // Druckbett-Gitter (XY-Ebene, z=0).
         val grid = AccentYellow.copy(alpha = 0.16f)
@@ -1237,7 +1412,7 @@ private fun SlicerCanvas(projection: Projection?, modelBitmap: ImageBitmap?, sup
             // Organische Baum-Stützen: unten dick, nach oben auf Tip-Durchmesser
             // verjüngt, hohl gezeichnet (durchscheinende Füllung + Kanten).
             val trunkColor = Color(0xFF66D9FF)
-            for (seg in buildTreeSupports(supports, supportProfile)) {
+            for (seg in treeSegs) {
                 val s0 = proj.worldToScreen(seg.a); val s1 = proj.worldToScreen(seg.b)
                 // mm-Radius → Bildschirm-Halbbreite (Mindestbreite, damit sichtbar).
                 val w0 = (seg.rA * proj.pxPerMm).coerceAtLeast(1.5f)
