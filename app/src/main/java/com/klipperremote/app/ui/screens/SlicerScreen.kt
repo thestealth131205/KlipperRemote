@@ -33,7 +33,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -424,6 +427,33 @@ private fun computeProjection(
     return Projection(projTris, picks, worldToScreen, zoom)
 }
 
+/**
+ * Rastert alle Modell-Dreiecke EINMAL in ein Off-Screen-Bitmap (Hintergrund-Thread).
+ * Große Meshes (z. B. 450k Flächen) dürfen NICHT pro Frame auf dem UI-Thread gezeichnet
+ * werden – das blockiert den Main-Thread → ANR. Der Compose-Canvas blittet danach nur
+ * dieses eine Bitmap. Ein einzelner wiederverwendeter android.graphics.Path vermeidet
+ * Hunderttausende Allokationen.
+ */
+private fun renderModelBitmap(proj: Projection, width: Int, height: Int): ImageBitmap? {
+    if (width <= 0 || height <= 0) return null
+    val bmp = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bmp)
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.FILL
+    }
+    val path = android.graphics.Path()
+    for (t in proj.tris) {
+        path.rewind()
+        path.moveTo(t.p0.x, t.p0.y)
+        path.lineTo(t.p1.x, t.p1.y)
+        path.lineTo(t.p2.x, t.p2.y)
+        path.close()
+        paint.color = t.color.toArgb()
+        canvas.drawPath(path, paint)
+    }
+    return bmp.asImageBitmap()
+}
+
 // ── Screen ───────────────────────────────────────────────────────────────────
 
 private enum class SlicerTool { NONE, SUPPORT, TRANSFORM }
@@ -592,6 +622,7 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
     var showProfiles by remember { mutableStateOf(false) }
     var showProjectMenu by remember { mutableStateOf(false) }
     var showSaveDialog by remember { mutableStateOf(false) }
+    var showSimplifyDialog by remember { mutableStateOf(false) } // nach Modell-Laden: wie stark vereinfachen?
     var projectsRefresh by remember { mutableStateOf(0) }
     // Baum-Stützen-Parameter aus dem Process-Profil (nach Dialog-Schließen neu laden).
     var supportProfile by remember { mutableStateOf(SupportProfile.DEFAULT) }
@@ -624,6 +655,7 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                 model = parsed
                 modelName = name ?: "modell"
                 modelRot = matIdentity(); scaleVal = 1f; simplifyLevel = 0; viewZoom = 1f; supports.clear()
+                showSimplifyDialog = true
             }
         }
     }
@@ -642,6 +674,15 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
         value = withContext(Dispatchers.Default) {
             computeProjection(m, rotSnapshot, scaleVal, az, el, viewZoom, viewport)
         }
+    }
+
+    // Modell-Dreiecke werden im Hintergrund in ein Bitmap gerastert (kein Zeichnen
+    // von Hunderttausenden Pfaden auf dem UI-Thread → verhindert ANR). Der vorherige
+    // Wert bleibt sichtbar, bis das neue Bitmap fertig ist (kein Flackern beim Orbit).
+    val modelBitmap by produceState<ImageBitmap?>(null, projection) {
+        val p = projection
+        value = if (p == null) null
+        else withContext(Dispatchers.Default) { renderModelBitmap(p, viewport.width, viewport.height) }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(BackgroundDark)) {
@@ -787,7 +828,7 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
                     }
                 }
         ) {
-            SlicerCanvas(projection = projection, supports = supports, supportProfile = supportProfile)
+            SlicerCanvas(projection = projection, modelBitmap = modelBitmap, supports = supports, supportProfile = supportProfile)
 
             if (model == null && !loading) {
                 Column(
@@ -932,6 +973,44 @@ fun SlicerScreen(onNavigateBack: () -> Unit) {
             }
         )
     }
+
+    if (showSimplifyDialog) {
+        var lvl by remember { mutableStateOf(simplifyLevel.toFloat()) }
+        AlertDialog(
+            onDismissRequest = { showSimplifyDialog = false },
+            containerColor = SurfaceDark,
+            title = { Text("Modell vereinfachen", color = OnSurface) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Wie stark soll das Modell vereinfacht werden?",
+                        color = OnSurfaceDim, fontSize = 12.sp
+                    )
+                    Text(
+                        "Vereinfachung: " + if (lvl.toInt() == 0) "aus" else "${lvl.toInt()} / 10",
+                        color = OnSurface, fontSize = 13.sp
+                    )
+                    Slider(
+                        value = lvl,
+                        onValueChange = { lvl = it },
+                        valueRange = 0f..10f,
+                        steps = 9,
+                        colors = SliderDefaults.colors(thumbColor = AccentYellow, activeTrackColor = AccentYellow)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    simplifyLevel = lvl.toInt().coerceIn(0, 10)
+                    supports.clear()
+                    showSimplifyDialog = false
+                }) { Text("Übernehmen", color = AccentYellow) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSimplifyDialog = false }) { Text("Abbrechen", color = OnSurfaceDim) }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1039,7 +1118,7 @@ private fun buildTreeSupports(tips: List<Vec3>, p: SupportProfile): List<TreeSeg
 }
 
 @Composable
-private fun SlicerCanvas(projection: Projection?, supports: List<Vec3>, supportProfile: SupportProfile) {
+private fun SlicerCanvas(projection: Projection?, modelBitmap: ImageBitmap?, supports: List<Vec3>, supportProfile: SupportProfile) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         // Druckbett-Gitter (XY-Ebene, z=0).
         val grid = AccentYellow.copy(alpha = 0.16f)
@@ -1062,13 +1141,10 @@ private fun SlicerCanvas(projection: Projection?, supports: List<Vec3>, supportP
                 y += step
             }
 
-            // Modell-Dreiecke (Painter's-Sortierung bereits angewandt).
-            for (t in proj.tris) {
-                val path = Path().apply {
-                    moveTo(t.p0.x, t.p0.y); lineTo(t.p1.x, t.p1.y); lineTo(t.p2.x, t.p2.y); close()
-                }
-                drawPath(path, t.color)
-            }
+            // Modell-Dreiecke: im Hintergrund vorgerendertes Bitmap nur blitten
+            // (Zeichnen der Pfade pro Frame auf dem UI-Thread würde bei großen
+            // Meshes ANR auslösen).
+            modelBitmap?.let { drawImage(it) }
 
             // Organische Baum-Stützen: unten dick, nach oben auf Tip-Durchmesser
             // verjüngt, hohl gezeichnet (durchscheinende Füllung + Kanten).
