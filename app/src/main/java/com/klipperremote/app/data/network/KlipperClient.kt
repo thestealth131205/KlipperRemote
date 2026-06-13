@@ -54,6 +54,13 @@ class KlipperClient(private val config: KlipperConfig) {
         }
         .build()
 
+    // Moonrakers /printer/gcode/script blockiert bis der G-Code fertig ausgeführt ist.
+    // Langläufer wie G28 (Homing), PROBE_CALIBRATE oder Bed-Mesh dauern länger als der
+    // normale readTimeout → eigener Client mit großzügigem Read-Timeout.
+    private val gcodeClient: OkHttpClient = client.newBuilder()
+        .readTimeout(35, TimeUnit.SECONDS)
+        .build()
+
     private val baseUrl: String
         get() {
             // Host bereinigen: Protokoll-Präfix und ggf. eingetippten Port entfernen
@@ -203,7 +210,7 @@ class KlipperClient(private val config: KlipperConfig) {
             .url("$baseUrl/printer/gcode/script")
             .post(body)
             .build()
-        val resp = client.newCall(req).execute()
+        val resp = gcodeClient.newCall(req).execute()
         if (!resp.isSuccessful) error("HTTP ${resp.code}")
     }
 

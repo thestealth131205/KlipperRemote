@@ -13,11 +13,15 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Forest
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
@@ -42,6 +46,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -530,6 +535,144 @@ private fun loadSupportProfile(ctx: android.content.Context): SupportProfile {
                 ?.coerceAtLeast(1.0f) ?: def.xyGap
         )
     } catch (e: Exception) { def }
+}
+
+// ── Slice-Einstellungen (aus Profil gefüllt oder manuell) ────────────────────
+
+/** Vom Slice-Profil ableitbare bzw. manuell editierbare Slice-Parameter. */
+private data class SliceSettings(
+    val layerHeight: Float,        // mm
+    val firstLayerHeight: Float,   // mm – erste Schicht
+    val flowRatio: Float,          // 1.0 = 100 % Extrusionsfluss
+    val infillPercent: Float,      // % Füllung
+    val supportsEnabled: Boolean,  // Stützen ja/nein
+    val overhangAngle: Float,      // ° – ab diesem Überhangwinkel automatisch stützen
+    val supportXyDistance: Float,  // mm – Abstand der Stützen zum Modell
+    val raftEnabled: Boolean,      // Raft ja/nein
+    val brimEnabled: Boolean,      // Brim ja/nein
+    val brimLines: Int             // Anzahl Brim-Linien
+) {
+    companion object {
+        val DEFAULT = SliceSettings(
+            layerHeight = 0.2f, firstLayerHeight = 0.2f, flowRatio = 1.0f,
+            infillPercent = 15f, supportsEnabled = false, overhangAngle = 30f,
+            supportXyDistance = 0.4f, raftEnabled = false, brimEnabled = false, brimLines = 0
+        )
+    }
+}
+
+private fun sliceSettingsFile(ctx: android.content.Context) =
+    File(ctx.filesDir, "slicer_settings.json")
+
+/** Lädt die zuletzt gespeicherten Einstellungen (oder Defaults). */
+private fun loadSliceSettings(ctx: android.content.Context): SliceSettings {
+    val f = sliceSettingsFile(ctx)
+    if (!f.exists()) return SliceSettings.DEFAULT
+    return try {
+        val o = org.json.JSONObject(f.readText())
+        val d = SliceSettings.DEFAULT
+        SliceSettings(
+            layerHeight = o.optDouble("layer_height", d.layerHeight.toDouble()).toFloat(),
+            firstLayerHeight = o.optDouble("first_layer_height", d.firstLayerHeight.toDouble()).toFloat(),
+            flowRatio = o.optDouble("flow_ratio", d.flowRatio.toDouble()).toFloat(),
+            infillPercent = o.optDouble("infill_percent", d.infillPercent.toDouble()).toFloat(),
+            supportsEnabled = o.optBoolean("supports_enabled", d.supportsEnabled),
+            overhangAngle = o.optDouble("overhang_angle", d.overhangAngle.toDouble()).toFloat(),
+            supportXyDistance = o.optDouble("support_xy_distance", d.supportXyDistance.toDouble()).toFloat(),
+            raftEnabled = o.optBoolean("raft_enabled", d.raftEnabled),
+            brimEnabled = o.optBoolean("brim_enabled", d.brimEnabled),
+            brimLines = o.optInt("brim_lines", d.brimLines)
+        )
+    } catch (e: Exception) { SliceSettings.DEFAULT }
+}
+
+private fun saveSliceSettings(ctx: android.content.Context, s: SliceSettings): Boolean = try {
+    val o = org.json.JSONObject()
+    o.put("layer_height", s.layerHeight.toDouble())
+    o.put("first_layer_height", s.firstLayerHeight.toDouble())
+    o.put("flow_ratio", s.flowRatio.toDouble())
+    o.put("infill_percent", s.infillPercent.toDouble())
+    o.put("supports_enabled", s.supportsEnabled)
+    o.put("overhang_angle", s.overhangAngle.toDouble())
+    o.put("support_xy_distance", s.supportXyDistance.toDouble())
+    o.put("raft_enabled", s.raftEnabled)
+    o.put("brim_enabled", s.brimEnabled)
+    o.put("brim_lines", s.brimLines)
+    sliceSettingsFile(ctx).writeText(o.toString())
+    true
+} catch (e: Exception) { false }
+
+private fun readFirstProfileJson(ctx: android.content.Context, type: String): org.json.JSONObject? {
+    val f = profileDir(ctx, type).listFiles()?.firstOrNull { it.extension == "json" } ?: return null
+    return try { org.json.JSONObject(f.readText()) } catch (e: Exception) { null }
+}
+
+// Orca speichert Werte teils als Strings/Arrays/"%". Defensiv aus einem JSON-Objekt lesen.
+private fun org.json.JSONObject?.profNum(vararg keys: String): Float? {
+    val o = this ?: return null
+    for (k in keys) {
+        val v = o.opt(k) ?: continue
+        val str = when (v) {
+            is org.json.JSONArray -> if (v.length() > 0) v.optString(0) else null
+            else -> v.toString()
+        } ?: continue
+        str.trim().removeSuffix("%").toFloatOrNull()?.let { return it }
+    }
+    return null
+}
+
+private fun org.json.JSONObject?.profFlag(vararg keys: String): Boolean? {
+    val o = this ?: return null
+    for (k in keys) {
+        val v = o.opt(k) ?: continue
+        val str = when (v) {
+            is org.json.JSONArray -> if (v.length() > 0) v.optString(0) else null
+            else -> v.toString()
+        } ?: continue
+        when (str.trim().lowercase()) {
+            "1", "true", "yes", "on" -> return true
+            "0", "false", "no", "off" -> return false
+        }
+    }
+    return null
+}
+
+private fun org.json.JSONObject?.profStr(vararg keys: String): String? {
+    val o = this ?: return null
+    for (k in keys) {
+        val v = o.opt(k) ?: continue
+        val s = when (v) {
+            is org.json.JSONArray -> if (v.length() > 0) v.optString(0) else null
+            else -> v.toString()
+        }
+        if (!s.isNullOrBlank()) return s.trim()
+    }
+    return null
+}
+
+/** Füllt Einstellungen best-effort aus den importierten Orca-Profilen (Process + Filament). */
+private fun sliceSettingsFromProfiles(ctx: android.content.Context, base: SliceSettings): SliceSettings {
+    val proc = readFirstProfileJson(ctx, "process")
+    val fil = readFirstProfileJson(ctx, "filament")
+    if (proc == null && fil == null) return base
+
+    val lineW = proc.profNum("line_width", "inner_wall_line_width")?.takeIf { it > 0.05f } ?: 0.42f
+    val brimType = proc.profStr("brim_type")
+    val brimWidth = proc.profNum("brim_width")
+    val raftLayers = proc.profNum("raft_layers")
+
+    return base.copy(
+        layerHeight = proc.profNum("layer_height") ?: base.layerHeight,
+        firstLayerHeight = proc.profNum("initial_layer_print_height", "first_layer_height") ?: base.firstLayerHeight,
+        flowRatio = (fil.profNum("filament_flow_ratio") ?: proc.profNum("filament_flow_ratio")) ?: base.flowRatio,
+        infillPercent = proc.profNum("sparse_infill_density", "fill_density") ?: base.infillPercent,
+        supportsEnabled = proc.profFlag("enable_support") ?: base.supportsEnabled,
+        overhangAngle = proc.profNum("support_threshold_angle") ?: base.overhangAngle,
+        supportXyDistance = proc.profNum("support_object_xy_distance") ?: base.supportXyDistance,
+        raftEnabled = raftLayers?.let { it > 0f } ?: base.raftEnabled,
+        brimEnabled = brimType?.let { it != "no_brim" } ?: base.brimEnabled,
+        brimLines = brimWidth?.let { (it / lineW).toInt().coerceAtLeast(1) } ?: base.brimLines
+    )
 }
 
 // ── Projekt-Verwaltung (virtuelles Druckbett mit allem drauf speichern/laden) ─
@@ -1428,9 +1571,16 @@ private fun SlicerCanvas(projection: Projection?, modelBitmap: ImageBitmap?, tre
                 val tube = Path().apply {
                     moveTo(a.x, a.y); lineTo(b.x, b.y); lineTo(c.x, c.y); lineTo(d.x, d.y); close()
                 }
-                drawPath(tube, trunkColor.copy(alpha = 0.16f)) // hohle Innenfläche
+                // Gefüllte, geschlossene Fläche statt durchscheinender Hülle.
+                drawPath(tube, trunkColor.copy(alpha = 0.85f))
+                // Alle vier Kanten inkl. Boden- und Spitzen-Kappe → Segment ist ringsum geschlossen.
                 drawLine(trunkColor, a, d, strokeWidth = 1.6f) // Außenkanten
                 drawLine(trunkColor, b, c, strokeWidth = 1.6f)
+                drawLine(trunkColor, a, b, strokeWidth = 1.6f) // Boden-Kappe
+                drawLine(trunkColor, d, c, strokeWidth = 1.6f) // Spitzen-Kappe
+                // Verbindungsknoten gefüllt → keine Lücken zwischen Segmenten.
+                drawCircle(trunkColor, radius = w0, center = s0)
+                drawCircle(trunkColor, radius = w1, center = s1)
             }
         }
     }
@@ -1536,7 +1686,13 @@ private fun ProfilesDialog(onDismiss: () -> Unit) {
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(color = SurfaceDark, shape = RoundedCornerShape(16.dp)) {
-            Column(Modifier.padding(18.dp).fillMaxWidth()) {
+            Column(
+                Modifier
+                    .padding(18.dp)
+                    .fillMaxWidth()
+                    .heightIn(max = 600.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Slicer-Profile", color = OnSurface, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.weight(1f))
@@ -1556,8 +1712,134 @@ private fun ProfilesDialog(onDismiss: () -> Unit) {
                         )
                     }
                 }
+
+                SliceSettingsSection()
             }
         }
+    }
+}
+
+@Composable
+private fun SliceSettingsSection() {
+    val context = LocalContext.current
+    val initial = remember { loadSliceSettings(context) }
+    // Float ohne unnötige Nachkommastellen darstellen (0.2 statt 0.20000001).
+    fun f(v: Float): String = if (v == v.toLong().toFloat()) v.toLong().toString() else v.toString()
+
+    var layerH by remember { mutableStateOf(f(initial.layerHeight)) }
+    var firstH by remember { mutableStateOf(f(initial.firstLayerHeight)) }
+    var flow by remember { mutableStateOf(f(initial.flowRatio * 100f)) }   // Anzeige in %
+    var infill by remember { mutableStateOf(f(initial.infillPercent)) }
+    var supportsOn by remember { mutableStateOf(initial.supportsEnabled) }
+    var overhang by remember { mutableStateOf(f(initial.overhangAngle)) }
+    var xyDist by remember { mutableStateOf(f(initial.supportXyDistance)) }
+    var raftOn by remember { mutableStateOf(initial.raftEnabled) }
+    var brimOn by remember { mutableStateOf(initial.brimEnabled) }
+    var brimLines by remember { mutableStateOf(initial.brimLines.toString()) }
+
+    Column(Modifier.padding(top = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Slice-Einstellungen", color = AccentYellow, fontSize = 13.sp,
+                fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = {
+                val s = sliceSettingsFromProfiles(context, loadSliceSettings(context))
+                layerH = f(s.layerHeight); firstH = f(s.firstLayerHeight)
+                flow = f(s.flowRatio * 100f); infill = f(s.infillPercent)
+                supportsOn = s.supportsEnabled; overhang = f(s.overhangAngle); xyDist = f(s.supportXyDistance)
+                raftOn = s.raftEnabled; brimOn = s.brimEnabled; brimLines = s.brimLines.toString()
+                Toast.makeText(context, "Werte aus Profil übernommen", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Default.Download, null, tint = AccentYellow, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Aus Profil laden", color = AccentYellow, fontSize = 12.sp)
+            }
+        }
+        Text(
+            "Werden beim Laden eines Profils automatisch gefüllt, lassen sich aber auch ohne Profil manuell setzen.",
+            color = OnSurfaceDim, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp)
+        )
+
+        NumField("Schichthöhe (mm)", layerH) { layerH = it }
+        NumField("Erste Schichthöhe (mm)", firstH) { firstH = it }
+        NumField("Extrusionsfluss (%)", flow) { flow = it }
+        NumField("Füllung (%)", infill) { infill = it }
+
+        SettingSwitch("Stützen", supportsOn) { supportsOn = it }
+        if (supportsOn) {
+            NumField("Überhangwinkel (°)", overhang) { overhang = it }
+            NumField("Abstand zum Modell (mm)", xyDist) { xyDist = it }
+        }
+        SettingSwitch("Raft", raftOn) { raftOn = it }
+        SettingSwitch("Brim", brimOn) { brimOn = it }
+        if (brimOn) NumField("Brim-Linien", brimLines) { brimLines = it }
+
+        Button(
+            onClick = {
+                val s = SliceSettings(
+                    layerHeight = layerH.toFloatOrNull() ?: initial.layerHeight,
+                    firstLayerHeight = firstH.toFloatOrNull() ?: initial.firstLayerHeight,
+                    flowRatio = flow.toFloatOrNull()?.div(100f) ?: initial.flowRatio,
+                    infillPercent = infill.toFloatOrNull() ?: initial.infillPercent,
+                    supportsEnabled = supportsOn,
+                    overhangAngle = overhang.toFloatOrNull() ?: initial.overhangAngle,
+                    supportXyDistance = xyDist.toFloatOrNull() ?: initial.supportXyDistance,
+                    raftEnabled = raftOn,
+                    brimEnabled = brimOn,
+                    brimLines = brimLines.toIntOrNull() ?: initial.brimLines
+                )
+                val ok = saveSliceSettings(context, s)
+                Toast.makeText(
+                    context,
+                    if (ok) "Einstellungen gespeichert" else "Speichern fehlgeschlagen",
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = AccentYellow)
+        ) {
+            Text("Einstellungen speichern", color = SurfaceDark, fontWeight = FontWeight.Medium)
+        }
+    }
+}
+
+@Composable
+private fun NumField(label: String, value: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { onChange(it.replace(',', '.').filter { c -> c.isDigit() || c == '.' }) },
+        label = { Text(label, fontSize = 12.sp) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = OnSurface,
+            unfocusedTextColor = OnSurface,
+            focusedBorderColor = AccentYellow,
+            unfocusedBorderColor = OnSurfaceDim,
+            focusedLabelColor = AccentYellow,
+            unfocusedLabelColor = OnSurfaceDim,
+            cursorColor = AccentYellow
+        )
+    )
+}
+
+@Composable
+private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+    ) {
+        Text(label, color = OnSurface, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = AccentYellow,
+                checkedTrackColor = AccentYellow.copy(alpha = 0.5f)
+            )
+        )
     }
 }
 

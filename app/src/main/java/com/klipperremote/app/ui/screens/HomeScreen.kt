@@ -1844,6 +1844,14 @@ fun ConsoleDialog(
         if (entries.isNotEmpty()) listState.scrollToItem(entries.size - 1)
     }
 
+    // Live-Aktualisierung: jede Sekunde neu laden
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(1_000L)
+            onRefresh()
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
