@@ -13,15 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.RestartAlt
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -54,7 +46,7 @@ private val CfgCommentColor = Color(0xFF888888) // Grau      für # Kommentar
 private val CfgEqualColor   = Color(0xFFAAAAAA) // Grau      für : / =
 private val CfgValueColor   = Color(0xFFEEEEEE) // Fast-Weiß für Werte
 
-private fun buildHighlighted(text: String): AnnotatedString = buildAnnotatedString {
+private fun buildHighlighted(text: String, searchQuery: String = ""): AnnotatedString = buildAnnotatedString {
     val lines = text.split('\n')
     lines.forEachIndexed { idx, line ->
         val trimmed = line.trimStart()
@@ -91,11 +83,23 @@ private fun buildHighlighted(text: String): AnnotatedString = buildAnnotatedStri
         }
         if (idx < lines.lastIndex) append('\n')
     }
+    // Search match highlighting
+    if (searchQuery.isNotBlank()) {
+        val lowerText = text.lowercase()
+        val lowerQuery = searchQuery.lowercase()
+        var startIdx = 0
+        while (true) {
+            val found = lowerText.indexOf(lowerQuery, startIdx)
+            if (found == -1) break
+            addStyle(SpanStyle(background = Color(0xFFE8FF00).copy(alpha = 0.5f), color = Color.Black), found, found + searchQuery.length)
+            startIdx = found + searchQuery.length
+        }
+    }
 }
 
-private object CfgSyntaxTransformation : VisualTransformation {
+private class CfgSyntaxTransformation(private val searchQuery: String = "") : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText =
-        TransformedText(buildHighlighted(text.text), OffsetMapping.Identity)
+        TransformedText(buildHighlighted(text.text, searchQuery), OffsetMapping.Identity)
 }
 
 // ── Screen ─────────────────────────────────────────────────────────────────────
@@ -116,6 +120,22 @@ fun MachineConfigScreen(
     val selectedPaths = remember { mutableStateListOf<String>() }
     // Upload-Dialog: Dateien per System-Auswahl hochladen
     var showUploadDialog by remember { mutableStateOf(false) }
+    // Config-Suche
+    var configSearchMode by remember { mutableStateOf(false) }
+    var configSearchQuery by remember { mutableStateOf("") }
+    LaunchedEffect(isEditing) {
+        if (!isEditing) { configSearchMode = false; configSearchQuery = "" }
+    }
+    val configSearchMatchCount = remember(uiState.editingConfigContent, configSearchQuery) {
+        if (configSearchQuery.isBlank()) 0
+        else {
+            var count = 0; var idx = 0
+            val lower = uiState.editingConfigContent.lowercase()
+            val lowerQ = configSearchQuery.lowercase()
+            while (true) { val f = lower.indexOf(lowerQ, idx); if (f == -1) break; count++; idx = f + lowerQ.length }
+            count
+        }
+    }
 
     fun exitBackupMode() {
         backupMode = false
@@ -176,6 +196,16 @@ fun MachineConfigScreen(
                 },
                 actions = {
                     if (isEditing) {
+                        IconButton(onClick = {
+                            configSearchMode = !configSearchMode
+                            if (!configSearchMode) configSearchQuery = ""
+                        }) {
+                            Icon(
+                                Icons.Default.Search,
+                                contentDescription = "In Konfiguration suchen",
+                                tint = if (configSearchMode) Color(0xFFE8FF00) else Color(0xFFAAAAAA)
+                            )
+                        }
                         IconButton(
                             onClick = { viewModel.saveCurrentConfigFile(uiState.editingConfigContent) },
                             enabled = !uiState.editingConfigSaving
@@ -345,12 +375,23 @@ fun MachineConfigScreen(
         }
 
         if (isEditing) {
-            ConfigEditor(
-                content = uiState.editingConfigContent,
-                error = uiState.editingConfigError,
-                onContentChange = { viewModel.updateEditingConfigContent(it) },
-                modifier = Modifier.padding(padding)
-            )
+            Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+                if (configSearchMode) {
+                    ConfigSearchBar(
+                        query = configSearchQuery,
+                        matchCount = configSearchMatchCount,
+                        onQueryChange = { configSearchQuery = it },
+                        onClose = { configSearchMode = false; configSearchQuery = "" }
+                    )
+                }
+                ConfigEditor(
+                    content = uiState.editingConfigContent,
+                    error = uiState.editingConfigError,
+                    onContentChange = { viewModel.updateEditingConfigContent(it) },
+                    searchQuery = configSearchQuery,
+                    modifier = Modifier.weight(1f)
+                )
+            }
         } else {
             ConfigFileList(
                 files = uiState.configFiles,
@@ -686,6 +727,68 @@ private fun formatFileSize(bytes: Long): String = when {
     else -> "${"%.1f".format(bytes / 1024.0 / 1024.0)} MB"
 }
 
+// ── Config-Suchleiste ─────────────────────────────────────────────────────────
+
+@Composable
+private fun ConfigSearchBar(
+    query: String,
+    matchCount: Int,
+    onQueryChange: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF1A1A1A))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.Search,
+            contentDescription = null,
+            tint = Color(0xFF888888),
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(Modifier.width(8.dp))
+        BasicTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            modifier = Modifier.weight(1f),
+            textStyle = TextStyle(
+                color = Color(0xFFEEEEEE),
+                fontSize = 14.sp,
+                fontFamily = FontFamily.Default
+            ),
+            cursorBrush = SolidColor(Color(0xFFE8FF00)),
+            singleLine = true,
+            decorationBox = { innerTextField ->
+                Box {
+                    if (query.isEmpty()) {
+                        Text("In Konfiguration suchen…", color = Color(0xFF555555), fontSize = 14.sp)
+                    }
+                    innerTextField()
+                }
+            }
+        )
+        if (query.isNotEmpty()) {
+            Text(
+                "$matchCount Treffer",
+                color = if (matchCount > 0) Color(0xFFE8FF00) else Color(0xFFEF5350),
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+        }
+        IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Suche schließen",
+                tint = Color(0xFF888888),
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
 // ── Editor ────────────────────────────────────────────────────────────────────
 
 @Composable
@@ -693,6 +796,7 @@ private fun ConfigEditor(
     content: String,
     error: String?,
     onContentChange: (String) -> Unit,
+    searchQuery: String = "",
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxSize().background(Color(0xFF0D0D0D))) {
@@ -730,7 +834,7 @@ private fun ConfigEditor(
                         lineHeight = 20.sp
                     ),
                     cursorBrush = SolidColor(Color(0xFFE8FF00)),
-                    visualTransformation = CfgSyntaxTransformation
+                    visualTransformation = remember(searchQuery) { CfgSyntaxTransformation(searchQuery) }
                 )
             }
         }

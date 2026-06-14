@@ -9,22 +9,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.text.BasicTextField
 import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.ui.theme.*
@@ -40,13 +41,19 @@ fun GcodeFileBrowserDialog(
     onPreviewFile: (String) -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    var searchQuery by remember { mutableStateOf("") }
+    val filteredFiles = remember(files, searchQuery) {
+        if (searchQuery.isBlank()) files
+        else files.filter { it.filename.contains(searchQuery, ignoreCase = true) }
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = Color(0xFF1C1C1C),
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 560.dp)
+                .heightIn(max = 580.dp)
         ) {
             Column {
                 // Header
@@ -69,14 +76,62 @@ fun GcodeFileBrowserDialog(
                 }
                 HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
 
-                if (files.isEmpty()) {
+                // Search bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        tint = OnSurfaceDim,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.weight(1f),
+                        textStyle = TextStyle(color = OnSurface, fontSize = 14.sp),
+                        cursorBrush = SolidColor(AccentYellow),
+                        singleLine = true,
+                        decorationBox = { innerTextField ->
+                            Box {
+                                if (searchQuery.isEmpty()) {
+                                    Text("Dateiname suchen…", color = OnSurfaceDim, fontSize = 14.sp)
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Löschen",
+                                tint = OnSurfaceDim,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = Color.White.copy(alpha = 0.05f))
+
+                if (filteredFiles.isEmpty()) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(32.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("Keine Dateien gefunden", color = OnSurfaceDim, fontSize = 14.sp)
+                        Text(
+                            if (searchQuery.isNotBlank()) "Keine Treffer für „$searchQuery""
+                            else "Keine Dateien gefunden",
+                            color = OnSurfaceDim,
+                            fontSize = 14.sp
+                        )
                     }
                 } else {
                     LazyColumn(
@@ -86,7 +141,7 @@ fun GcodeFileBrowserDialog(
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {
-                        items(files, key = { "${it.filename}_${it.modified}" }) { file ->
+                        items(filteredFiles, key = { "${it.filename}_${it.modified}" }) { file ->
                             GcodeFileItem(
                                 file = file,
                                 onClick = { onSelectFile(file.filename) },
