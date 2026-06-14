@@ -21,7 +21,10 @@ object PrintNotificationHelper {
 
     private const val CHANNEL_ID = "print_status"
     private const val NOTIFICATION_ID = 4711
+    private const val RESULT_NOTIFICATION_ID = 4712
     private const val ACCENT_COLOR = 0xFFFF6D00.toInt() // KlipperOrange
+    private const val SUCCESS_COLOR = 0xFF4CAF50.toInt() // Grün
+    private const val ERROR_COLOR = 0xFFE53935.toInt()   // Rot
 
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -94,8 +97,115 @@ object PrintNotificationHelper {
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
     }
 
+    /** ID der laufenden Druck-Benachrichtigung (für den Vordergrunddienst). */
+    val ongoingNotificationId: Int get() = NOTIFICATION_ID
+
+    /**
+     * Baut eine minimale laufende Benachrichtigung für den Start des Vordergrunddienstes
+     * (startForeground benötigt sofort eine Notification). Wird anschließend durch
+     * [showPrintProgress] mit echten Werten aktualisiert.
+     */
+    fun buildForegroundNotification(context: Context): Notification {
+        ensureChannel(context)
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context, 0, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Druck wird überwacht")
+            .setColor(ACCENT_COLOR)
+            .setColorized(true)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setContentIntent(pendingIntent)
+            .build()
+    }
+
     /** Druck beendet → laufende Benachrichtigung entfernen. */
     fun clearPrintProgress(context: Context) {
         NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
+    }
+
+    /**
+     * Erfolgreicher Druck: ersetzt die laufende Benachrichtigung durch eine
+     * Druckstatistik (Min/Max-Werte, Druckdauer, Materialverbrauch).
+     */
+    fun showPrintComplete(
+        context: Context,
+        filename: String,
+        statsLines: List<String>
+    ) {
+        if (!hasPermission(context)) return
+        ensureChannel(context)
+        clearPrintProgress(context)
+
+        val name = filename.substringAfterLast('/').ifBlank { "Druck" }
+        val body = statsLines.joinToString("\n")
+
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context, 0, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Druck abgeschlossen: $name")
+            .setContentText(statsLines.firstOrNull() ?: "")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body).setSummaryText(name))
+            .setColor(SUCCESS_COLOR)
+            .setColorized(true)
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(RESULT_NOTIFICATION_ID, notification)
+    }
+
+    /**
+     * Abgebrochener/fehlgeschlagener Druck: entfernt die laufende Benachrichtigung
+     * und zeigt eine extra Benachrichtigung mit dem angehängten Fehler.
+     */
+    fun showPrintFailed(
+        context: Context,
+        filename: String,
+        errorMessage: String
+    ) {
+        if (!hasPermission(context)) return
+        ensureChannel(context)
+        clearPrintProgress(context)
+
+        val name = filename.substringAfterLast('/').ifBlank { "Druck" }
+        val error = errorMessage.ifBlank { "Der Druck wurde abgebrochen." }
+
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context, 0, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Druck abgebrochen: $name")
+            .setContentText(error)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(error).setSummaryText(name))
+            .setColor(ERROR_COLOR)
+            .setColorized(true)
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(RESULT_NOTIFICATION_ID, notification)
     }
 }

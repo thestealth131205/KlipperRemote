@@ -17,6 +17,7 @@ import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
+import com.klipperremote.app.data.model.PrinterProfile
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
@@ -42,8 +43,15 @@ data class MainUiState(
     val config: KlipperConfig = KlipperConfig(),
     val appConfig: AppConfig = AppConfig(),
     val webcamConfig: WebcamConfig = WebcamConfig(),
+    // Alle Webcams des aktiven Druckers (Wischen zum Wechseln, wenn >1).
+    val webcams: List<WebcamConfig> = emptyList(),
+    // Alle gespeicherten Drucker + ID des aktiven (Drei-Striche-Menü).
+    val printers: List<PrinterProfile> = emptyList(),
+    val selectedPrinterId: String = "",
     val setTempSuccess: String? = null,
     val printerState: String = "offline",
+    // Unveränderter Klipper-print_stats.state (für Abschluss-/Abbrucherkennung).
+    val rawPrintState: String = "",
     val position: KlipperPosition = KlipperPosition(),
     val files: List<PrintFile> = emptyList(),
     val macros: List<String> = emptyList(),
@@ -99,7 +107,10 @@ data class MainUiState(
     val driverSettingsLoading: Boolean = false,
     val driverSettingsSaving: Boolean = false,
     val driverSettingsSaved: Boolean = false,
-    val driverSettingsError: String? = null
+    val driverSettingsError: String? = null,
+    // Druckergebnis je Dateiname: true = erfolgreich, false = abgebrochen/Fehler.
+    // Steuert das Symbol neben Vorschau-/Play-Button in der Dateiliste.
+    val printResults: Map<String, Boolean> = emptyMap()
 )
 
 @HiltViewModel
@@ -111,8 +122,6 @@ class MainViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
-    /** Letzter bekannter Druckzustand – um den Start eines Drucks zu erkennen. */
-    private var lastPrintingActive = false
 
     /** Zähler aufeinanderfolgender Verbindungsfehler (für den Hinweisdialog). */
     private var consecutiveFailures = 0
@@ -168,6 +177,21 @@ class MainViewModel @Inject constructor(
                 _uiState.update { it.copy(webcamConfig = webcamConfig) }
             }
         }
+        viewModelScope.launch {
+            repository.webcamsFlow.collect { webcams ->
+                _uiState.update { it.copy(webcams = webcams) }
+            }
+        }
+        viewModelScope.launch {
+            repository.profilesFlow.collect { printers ->
+                _uiState.update { it.copy(printers = printers) }
+            }
+        }
+        viewModelScope.launch {
+            repository.selectedPrinterIdFlow.collect { id ->
+                _uiState.update { it.copy(selectedPrinterId = id) }
+            }
+        }
         // App-Konfiguration (Parallelität + Intervalle) übernehmen.
         viewModelScope.launch {
             repository.appConfigFlow.collect { appConfig ->
@@ -187,7 +211,15 @@ class MainViewModel @Inject constructor(
             val favorites = repository.loadFavoriteMacros()
             _uiState.update { it.copy(favoriteMacros = favorites) }
         }
+        // Druckergebnisse (Symbole in der Dateiliste) aus DataStore laden
+        viewModelScope.launch {
+            val results = repository.loadPrintResults()
+            if (results.isNotEmpty()) {
+                _uiState.update { it.copy(printResults = results) }
+            }
+        }
         startPolling()
+        collectWsSnapshot()
         loadFiles()
         autoDetectWebcamIfNeeded()
     }
@@ -199,53 +231,76 @@ class MainViewModel @Inject constructor(
     }
 
     private fun startPolling() {
-        // Status-Schleife (Vordergrund) – Intervall = Status-/Temperatur-Intervall aus AppConfig.
-        // WÄHREND eines Drucks werden ALLE oben angezeigten Statuswerte (Temperaturen,
-        // Position, Druckfortschritt, Druckstatistik, Tuning) mit EINER EINZIGEN
-        // printer.objects.query-Anfrage geholt. Im Leerlauf nur die Temperaturen.
+        // Status-Schleife (Vordergrund) – HTTP-Fallback, wenn WebSocket nicht verbunden.
+        // Ist der WS verbunden, liefert [collectWsSnapshot] bereits Push-Updates für alle
+        // Statuswerte; HTTP-Abfragen wären dann redundant und belasten den Drucker unnötig.
         viewModelScope.launch {
             while (true) {
-                if (!connectionPaused && appInForeground) {
+                if (!connectionPaused && appInForeground && !repository.wsConnected.value) {
                     if (isPrintActive()) queue.enqueueHigh { fetchPrinterSnapshotInternal() }
                     else queue.enqueueHigh { fetchTemperaturesInternal() }
                 }
                 delay(tempIntervalMs)
             }
         }
-        // Hintergrunddaten (Vordergrund, NUR im Leerlauf) – Intervall aus AppConfig.
-        // Während des Drucks übernimmt die Snapshot-Schleife oben alles; hier wird nur
-        // im Leerlauf der Druckerstatus + die Position aktualisiert (um Druckbeginn zu
-        // erkennen). Fortschritt/Geschwindigkeit/Statistik sind im Leerlauf ohnehin null.
+        // Hintergrunddaten (Vordergrund, NUR im Leerlauf, NUR ohne WS) – Intervall aus AppConfig.
         viewModelScope.launch {
-            if (!connectionPaused && appInForeground && !isPrintActive()) {
+            if (!connectionPaused && appInForeground && !isPrintActive() && !repository.wsConnected.value) {
                 queue.enqueueNormal { fetchPowerDevicesInternal() }
             }
             while (true) {
                 delay(backgroundIntervalMs)
-                if (connectionPaused || !appInForeground || isPrintActive()) continue
+                if (connectionPaused || !appInForeground || isPrintActive() || repository.wsConnected.value) continue
                 queue.enqueueNormal { fetchPrinterStatusInternal() }
                 queue.enqueueNormal { fetchPositionInternal() }
-                queue.enqueueNormal { syncPrintNotification() }
             }
         }
-        // Power-Geräte seltener aktualisieren (Vordergrund) – Intervall aus AppConfig.
-        // Während des Drucks werden Energiegeräte NICHT abgefragt.
+        // Power-Geräte seltener aktualisieren (Vordergrund) – Während des Drucks und bei
+        // aktiver WS-Verbindung werden Energiegeräte nicht per HTTP abgefragt.
         viewModelScope.launch {
             while (true) {
                 delay(powerIntervalMs)
-                if (!connectionPaused && appInForeground && !isPrintActive()) {
+                if (!connectionPaused && appInForeground && !isPrintActive() && !repository.wsConnected.value) {
                     queue.enqueueNormal { fetchPowerDevicesInternal() }
                 }
             }
         }
-        // Hintergrund-Modus: nur die für die Benachrichtigung nötigen Daten – mit EINER
-        // einzigen Snapshot-Anfrage je Intervall. Schont den Klipper-Rechner, wenn die
-        // App nicht im Vordergrund ist (oder versehentlich offen bleibt).
+        // Hintergrund-Modus: HTTP-Snapshot nur wenn WS nicht verbunden.
+        // Bei aktiver WS-Verbindung pusht Moonraker Änderungen automatisch auch im Hintergrund.
         viewModelScope.launch {
             while (true) {
                 delay(notifyIntervalMs)
-                if (connectionPaused || appInForeground) continue
+                if (connectionPaused || appInForeground || repository.wsConnected.value) continue
                 queue.enqueueNormal { fetchPrinterSnapshotInternal() }
+            }
+        }
+    }
+
+    /**
+     * Abonniert den via WebSocket gepushten Drucker-Status und aktualisiert den UI-State
+     * direkt bei jedem Update. HTTP-Polling läuft parallel als Fallback und wird in
+     * [startPolling] automatisch pausiert, sobald der WS-Client verbunden ist.
+     */
+    private fun collectWsSnapshot() {
+        viewModelScope.launch {
+            repository.wsSnapshot.collect { snap ->
+                if (snap != null) {
+                    _uiState.update {
+                        it.copy(
+                            temperatures       = snap.temperatures,
+                            isLoading          = false,
+                            printerState       = snap.printerState,
+                            rawPrintState      = snap.rawState,
+                            position           = snap.position,
+                            printProgress      = snap.printProgress,
+                            printSpeedMmPerSec = snap.printSpeedMmPerSec,
+                            printStats         = snap.printStats,
+                            tuningData         = snap.tuningData
+                        )
+                    }
+                    reportConnectionResult(success = true)
+                    processPrintLifecycle(snap)
+                }
             }
         }
     }
@@ -340,6 +395,7 @@ class MainViewModel @Inject constructor(
                         temperatures = snap.temperatures,
                         isLoading = false,
                         printerState = snap.printerState,
+                        rawPrintState = snap.rawState,
                         position = snap.position,
                         printProgress = snap.printProgress,
                         printSpeedMmPerSec = snap.printSpeedMmPerSec,
@@ -348,7 +404,7 @@ class MainViewModel @Inject constructor(
                     )
                 }
                 reportConnectionResult(success = true)
-                syncPrintNotification()
+                processPrintLifecycle(snap)
             }
             .onFailure {
                 reportConnectionResult(success = false)
@@ -363,33 +419,28 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Erkennt anhand des Druckerzustands, ob ein Druck läuft, und zeigt bzw. entfernt
-     * die fortlaufende Druck-Benachrichtigung. Wird bei Druckstart erstmals ausgelöst.
+     * Wertet ein Status-Update über [PrintMonitor] aus: zeigt/aktualisiert die laufende
+     * Druck-Benachrichtigung, sammelt Min/Max-Statistiken und löst bei Druckende die
+     * Abschluss-/Fehlerbenachrichtigung aus. Bei einem beendeten Druck wird zusätzlich
+     * der [PrintMonitorService] für die Vordergrund-Überwachung gestartet bzw. gestoppt
+     * und das Ergebnis-Symbol persistiert.
      */
-    private fun syncPrintNotification() {
-        val state = _uiState.value
-        val printing = state.printerState.equals("printing", ignoreCase = true)
-        if (printing) {
-            val stats = state.printStats
-            val progress = stats?.progress ?: state.printProgress ?: 0f
-            val filename = stats?.filename ?: ""
-            val etaText = stats?.let { s ->
-                if (s.progress > 0.01f) {
-                    val remainingSecs = (s.printDuration / s.progress * (1f - s.progress)).toLong()
-                    val etaMillis = System.currentTimeMillis() + remainingSecs * 1000L
-                    val cal = java.util.Calendar.getInstance().apply { timeInMillis = etaMillis }
-                    "%02d:%02d".format(
-                        cal.get(java.util.Calendar.HOUR_OF_DAY),
-                        cal.get(java.util.Calendar.MINUTE)
-                    )
-                } else null
-            }
-            PrintNotificationHelper.showPrintProgress(appContext, filename, progress, etaText)
-            lastPrintingActive = true
-        } else if (lastPrintingActive) {
-            PrintNotificationHelper.clearPrintProgress(appContext)
-            lastPrintingActive = false
+    private fun processPrintLifecycle(snap: com.klipperremote.app.data.model.PrinterSnapshot) {
+        val printing = snap.printerState == "printing" || snap.printerState == "paused"
+        // Hintergrund-Überwachung an den Druckstatus koppeln (zuverlässige Updates im Hintergrund).
+        if (printing) PrintMonitorService.start(appContext)
+        val result = PrintMonitor.onSnapshot(appContext, snap)
+        result?.let {
+            recordPrintResult(it.filename, it.success)
+            PrintMonitorService.stop(appContext)
         }
+    }
+
+    /** Speichert das Druckergebnis (Symbol in der Dateiliste) und persistiert es. */
+    private fun recordPrintResult(filename: String, success: Boolean) {
+        val updated = _uiState.value.printResults + (filename to success)
+        _uiState.update { it.copy(printResults = updated) }
+        viewModelScope.launch { repository.savePrintResults(updated) }
     }
 
     private suspend fun fetchTuningDataInternal() {
@@ -605,6 +656,12 @@ class MainViewModel @Inject constructor(
     }
 
     fun startPrint(filename: String) {
+        // Vorheriges Ergebnis-Symbol dieser Datei entfernen – wird beim Druckende neu gesetzt.
+        if (_uiState.value.printResults.containsKey(filename)) {
+            val updated = _uiState.value.printResults - filename
+            _uiState.update { it.copy(printResults = updated) }
+            viewModelScope.launch { repository.savePrintResults(updated) }
+        }
         queue.enqueueHigh {
             repository.startPrint(filename)
                 .onSuccess {
@@ -664,6 +721,45 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /** Speichert die komplette Webcam-Liste des aktiven Druckers (Multi-Webcam). */
+    fun saveWebcams(webcams: List<WebcamConfig>) {
+        viewModelScope.launch {
+            repository.saveWebcams(webcams)
+        }
+    }
+
+    // ── Mehrere Drucker verwalten (Drei-Striche-Menü) ────────────────────────
+
+    fun addPrinter(name: String, host: String, port: Int, apiKey: String) {
+        consecutiveFailures = 0
+        connectionPaused = false
+        _uiState.update { it.copy(showConnectionFailedDialog = false, connectionPaused = false) }
+        viewModelScope.launch {
+            repository.addPrinter(name = name, host = host, port = port, apiKey = apiKey)
+        }
+    }
+
+    fun updatePrinter(profile: PrinterProfile) {
+        viewModelScope.launch {
+            repository.updatePrinter(profile)
+        }
+    }
+
+    fun deletePrinter(id: String) {
+        viewModelScope.launch {
+            repository.deletePrinter(id)
+        }
+    }
+
+    fun selectPrinter(id: String) {
+        consecutiveFailures = 0
+        connectionPaused = false
+        _uiState.update { it.copy(showConnectionFailedDialog = false, connectionPaused = false) }
+        viewModelScope.launch {
+            repository.selectPrinter(id)
+        }
+    }
+
     private suspend fun fetchPowerDevicesInternal() {
         repository.getPowerDevices()
             .onSuccess { devices ->
@@ -674,6 +770,12 @@ class MainViewModel @Inject constructor(
             .onFailure {
                 reportConnectionResult(success = false)
             }
+    }
+
+    /** Lädt die Energiegeräte einmalig nach (z. B. beim Öffnen des Power-Dialogs während des Drucks). */
+    fun refreshPowerDevices() {
+        if (connectionPaused) return
+        queue.enqueueHigh { fetchPowerDevicesInternal() }
     }
 
     fun togglePowerDevice(device: String, on: Boolean) {

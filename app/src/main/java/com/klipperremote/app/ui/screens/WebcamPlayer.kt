@@ -6,21 +6,27 @@ import android.graphics.BitmapFactory
 import androidx.annotation.OptIn
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
@@ -87,12 +93,71 @@ fun WebcamPlayer(
     stunServer: String = "",
     iceUsername: String = "",
     icePassword: String = "",
+    zoomable: Boolean = false,
+    onZoomedChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    // Zoom-/Pan-Zustand (Pinch-to-Zoom ins Webcam-Bild)
+    var scale by remember(streamUrl) { mutableFloatStateOf(1f) }
+    var offsetX by remember(streamUrl) { mutableFloatStateOf(0f) }
+    var offsetY by remember(streamUrl) { mutableFloatStateOf(0f) }
+
+    var boxWidth by remember { mutableFloatStateOf(0f) }
+    var boxHeight by remember { mutableFloatStateOf(0f) }
+
+    fun clampOffsets() {
+        val maxX = (boxWidth * (scale - 1f)) / 2f
+        val maxY = (boxHeight * (scale - 1f)) / 2f
+        offsetX = offsetX.coerceIn(-maxX, maxX)
+        offsetY = offsetY.coerceIn(-maxY, maxY)
+    }
+
+    var outer = modifier.background(Color.Black)
+    if (zoomable) {
+        outer = outer
+            .clipToBounds()
+            .onSizeChanged { size -> boxWidth = size.width.toFloat(); boxHeight = size.height.toFloat() }
+            .pointerInput(streamUrl) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(1f, 5f)
+                    val wasZoomed = scale > 1.01f
+                    scale = newScale
+                    if (scale > 1f) {
+                        offsetX += pan.x
+                        offsetY += pan.y
+                        clampOffsets()
+                    } else {
+                        offsetX = 0f
+                        offsetY = 0f
+                    }
+                    val isZoomed = scale > 1.01f
+                    if (isZoomed != wasZoomed) onZoomedChange(isZoomed)
+                }
+            }
+            .pointerInput(streamUrl) {
+                detectTapGestures(onDoubleTap = {
+                    scale = 1f
+                    offsetX = 0f
+                    offsetY = 0f
+                    onZoomedChange(false)
+                })
+            }
+    }
+
     Box(
-        modifier = modifier.background(Color.Black),
+        modifier = outer,
         contentAlignment = Alignment.Center
     ) {
+        val contentModifier = if (zoomable) {
+            Modifier.fillMaxSize().graphicsLayer(
+                scaleX = scale,
+                scaleY = scale,
+                translationX = offsetX,
+                translationY = offsetY
+            )
+        } else {
+            Modifier.fillMaxSize()
+        }
         when (streamType) {
             WebcamStreamType.WEBRTC -> WebRtcPlayer(
                 url = streamUrl,
@@ -102,21 +167,21 @@ fun WebcamPlayer(
                 flipH = flipH,
                 flipV = flipV,
                 rotate = rotate,
-                modifier = Modifier.fillMaxSize()
+                modifier = contentModifier
             )
             WebcamStreamType.HLS -> HlsPlayer(
                 url = streamUrl,
                 flipH = flipH,
                 flipV = flipV,
                 rotate = rotate,
-                modifier = Modifier.fillMaxSize()
+                modifier = contentModifier
             )
             else -> MjpegPlayer(
                 url = streamUrl,
                 flipH = flipH,
                 flipV = flipV,
                 rotate = rotate,
-                modifier = Modifier.fillMaxSize()
+                modifier = contentModifier
             )
         }
     }

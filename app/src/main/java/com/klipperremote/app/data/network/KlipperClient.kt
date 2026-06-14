@@ -918,41 +918,45 @@ class KlipperClient(private val config: KlipperConfig) {
         val motionRep = status.optJSONObject("motion_report")
         val vSdcard   = status.optJSONObject("virtual_sdcard")
 
-        // Fortschritt + Druckstatistik nur während aktivem Druck/Pause
+        // Fortschritt + Druckstatistik
         val printing = rawState == "printing" || rawState == "paused"
         var progress: Float? = null
         var speedMmS: Float? = null
         var stats: PrintStats? = null
-        if (printing && ps != null) {
+        if (ps != null) {
             val filename = ps.optString("filename", "")
             val printDuration = ps.optDouble("print_duration", 0.0)
-            val fileProgress = vSdcard?.optDouble("progress", 0.0)?.toFloat() ?: 0f
-            progress = computeProgress(printDuration, filename, fileProgress)
-
-            val speedMmMin = gcodeMove?.optDouble("speed", -1.0) ?: -1.0
-            speedMmS = if (speedMmMin > 0) (speedMmMin / 60.0).toFloat() else null
+            if (printing) {
+                val fileProgress = vSdcard?.optDouble("progress", 0.0)?.toFloat() ?: 0f
+                progress = computeProgress(printDuration, filename, fileProgress)
+                val speedMmMin = gcodeMove?.optDouble("speed", -1.0) ?: -1.0
+                speedMmS = if (speedMmMin > 0) (speedMmMin / 60.0).toFloat() else null
+            }
 
             val info = ps.optJSONObject("info")
             val currentLayer = info?.optInt("current_layer", -1)?.takeIf { it > 0 }
             val totalLayers  = info?.optInt("total_layer", -1)?.takeIf { it > 0 }
 
             val liveExtVel = motionRep?.optDouble("live_extruder_velocity", 0.0)?.toFloat() ?: 0f
-            val volumetricFlow = if (liveExtVel > 0.001f) {
+            val volumetricFlow = if (printing && liveExtVel > 0.001f) {
                 val r = 1.75f / 2f
                 liveExtVel * Math.PI.toFloat() * r * r
             } else null
 
+            // Druckstatistik immer parsen, damit nach Abschluss/Abbruch die finalen Werte
+            // (Filamentverbrauch, Druckdauer, Statusmeldung) für die Benachrichtigung bereitstehen.
             stats = PrintStats(
                 filename      = filename,
                 printDuration = printDuration.toFloat(),
-                progress      = progress,
+                progress      = progress ?: 0f,
                 filamentUsed  = ps.optDouble("filament_used", 0.0).toFloat(),
                 currentLayer  = currentLayer,
                 totalLayers   = totalLayers,
                 maxVelocity   = toolhead?.optDouble("max_velocity", 0.0)?.toFloat()?.takeIf { it > 0 },
                 volumetricFlow = volumetricFlow,
                 speedFactor   = gcodeMove?.optDouble("speed_factor", 1.0)?.toFloat() ?: 1f,
-                extrudeFactor = gcodeMove?.optDouble("extrude_factor", 1.0)?.toFloat() ?: 1f
+                extrudeFactor = gcodeMove?.optDouble("extrude_factor", 1.0)?.toFloat() ?: 1f,
+                message       = ps.optString("message", "")
             )
         }
 
@@ -976,6 +980,7 @@ class KlipperClient(private val config: KlipperConfig) {
         PrinterSnapshot(
             temperatures = temps.sortedBy { it.name },
             printerState = mapped,
+            rawState = rawState,
             position = position,
             printProgress = progress,
             printSpeedMmPerSec = speedMmS,

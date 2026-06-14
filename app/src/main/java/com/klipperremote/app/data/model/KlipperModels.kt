@@ -16,6 +16,26 @@ data class KlipperConfig(
 )
 
 /**
+ * Ein gespeicherter Drucker mit eigener Verbindung und Webcam-Liste. Ermöglicht das
+ * Verwalten mehrerer Drucker; der aktuell ausgewählte Drucker bestimmt die aktive
+ * Verbindung ([KlipperConfig]) und die angezeigten Webcams.
+ */
+data class PrinterProfile(
+    val id: String,
+    val name: String = "Drucker",
+    val host: String = "",
+    val port: Int = 7125,
+    val username: String = "",
+    val password: String = "",
+    val apiKey: String = "",
+    val webcams: List<WebcamConfig> = emptyList()
+) {
+    fun toKlipperConfig() = KlipperConfig(
+        host = host, port = port, username = username, password = password, apiKey = apiKey
+    )
+}
+
+/**
  * Zentrale App-/Verbindungseinstellungen: steuern, wie viele Anfragen gleichzeitig
  * laufen dürfen und in welchen Intervallen Daten abgerufen werden. Über die
  * Sektion "App Konfiguration" in den Einstellungen veränderbar.
@@ -184,7 +204,8 @@ data class PrintStats(
     val maxVelocity: Float? = null,      // mm/s aus toolhead.max_velocity
     val volumetricFlow: Float? = null,   // mm³/s (null = nicht verfügbar)
     val speedFactor: Float = 1f,         // Geschwindigkeitsfaktor (1.0 = 100 %)
-    val extrudeFactor: Float = 1f        // Extrusionsfaktor (1.0 = 100 %)
+    val extrudeFactor: Float = 1f,       // Extrusionsfaktor (1.0 = 100 %)
+    val message: String = ""             // Klipper-Statusmeldung (z. B. Abbruch-/Fehlergrund)
 )
 
 /**
@@ -196,6 +217,9 @@ data class PrintStats(
 data class PrinterSnapshot(
     val temperatures: List<TemperatureInfo> = emptyList(),
     val printerState: String = "offline",
+    // Unveränderter Klipper-print_stats.state (standby|printing|paused|complete|cancelled|error),
+    // im Gegensatz zu printerState, das complete/cancelled auf "ready" abbildet.
+    val rawState: String = "",
     val position: KlipperPosition = KlipperPosition(),
     val printProgress: Float? = null,
     val printSpeedMmPerSec: Float? = null,

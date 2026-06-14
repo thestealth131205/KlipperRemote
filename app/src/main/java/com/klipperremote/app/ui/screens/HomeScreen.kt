@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,6 +47,7 @@ import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
+import com.klipperremote.app.data.model.PrinterProfile
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
@@ -71,6 +74,7 @@ fun HomeScreen(
     var showTuningDialog by remember { mutableStateOf(false) }
     var showPauseConfirm by remember { mutableStateOf(false) }
     var showConsole by remember { mutableStateOf(false) }
+    var showPrinterManager by remember { mutableStateOf(false) }
 
     val powerDevices = uiState.powerDevices
     val isPowerOn = powerDevices.any { it.status == "on" }
@@ -80,8 +84,12 @@ fun HomeScreen(
         bottomBar = {
             BottomControlBar(
                 printerState = uiState.printerState,
+                printers = uiState.printers,
+                selectedPrinterId = uiState.selectedPrinterId,
                 onNavigateToAppConfig = onNavigateToSettings,
                 onOpenWebcamConfig = { showWebcamSettings = true },
+                onOpenPrinterManager = { showPrinterManager = true },
+                onSelectPrinter = { viewModel.selectPrinter(it) },
                 onNavigateToMachine = onNavigateToMachine,
                 onNavigateToDriverSettings = onNavigateToDriverSettings,
                 onStartPrint = { showGcodeFileBrowser = true },
@@ -197,13 +205,12 @@ fun HomeScreen(
                             Box(
                                 modifier = Modifier
                                     .size(32.dp)
-                                    .alpha(if (isPrinting) 0.4f else 1f)
                                     .clip(CircleShape)
                                     .background(
                                         if (isPowerOn) AccentYellow.copy(alpha = 0.15f)
                                         else Color.Transparent
                                     )
-                                    .clickable(enabled = !isPrinting) { showPowerDialog = true },
+                                    .clickable { showPowerDialog = true },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -265,7 +272,7 @@ fun HomeScreen(
                         } else {
                             TemperatureGrid(
                                 temps = uiState.temperatures,
-                                enabled = !isPrinting,
+                                enabled = true,
                                 onSetTemp = { setTempTarget = it }
                             )
                         }
@@ -307,7 +314,7 @@ fun HomeScreen(
                         WebcamCard(
                             host = uiState.config.host,
                             port = uiState.config.port,
-                            webcamConfig = uiState.webcamConfig,
+                            webcams = uiState.webcams.ifEmpty { listOf(uiState.webcamConfig) },
                             apiKey = uiState.config.apiKey,
                             printProgress = uiState.printProgress,
                             printSpeedMmPerSec = uiState.printSpeedMmPerSec,
@@ -378,6 +385,7 @@ fun HomeScreen(
                         items(uiState.files, key = { "${it.filename}_${it.modified}" }) { file ->
                             PrintFileRow(
                                 file = file,
+                                printResult = uiState.printResults[file.filename],
                                 onPrint = { viewModel.startPrint(file.filename) },
                                 onViewGCode = { onOpenGCodeViewer(file.filename) }
                             )
@@ -417,10 +425,25 @@ fun HomeScreen(
 
     // Power dialog
     if (showPowerDialog) {
+        // Energiegeräte beim Öffnen aktualisieren (während des Drucks werden sie sonst nicht gepollt)
+        LaunchedEffect(Unit) { viewModel.refreshPowerDevices() }
         PowerDialog(
             devices = powerDevices,
+            isPrinting = uiState.printerState == "printing" || uiState.printerState == "paused",
             onToggle = { name, on -> viewModel.togglePowerDevice(name, on) },
             onDismiss = { showPowerDialog = false }
+        )
+    }
+
+    // Drucker-Manager-Dialog
+    if (showPrinterManager) {
+        PrinterManagerDialog(
+            printers = uiState.printers,
+            selectedId = uiState.selectedPrinterId,
+            onSelect = { viewModel.selectPrinter(it); showPrinterManager = false },
+            onAdd = { name, host, port, key -> viewModel.addPrinter(name, host, port, key) },
+            onDelete = { viewModel.deletePrinter(it) },
+            onDismiss = { showPrinterManager = false }
         )
     }
 
@@ -776,7 +799,7 @@ fun TempCard(
 fun WebcamCard(
     host: String,
     port: Int = 7125,
-    webcamConfig: WebcamConfig,
+    webcams: List<WebcamConfig>,
     apiKey: String = "",
     printProgress: Float? = null,
     printSpeedMmPerSec: Float? = null,
@@ -787,6 +810,9 @@ fun WebcamCard(
     onResumePrint: () -> Unit = {},
     onSaveSnapshot: () -> Unit = {}
 ) {
+    val camList = webcams.ifEmpty { listOf(WebcamConfig()) }
+    val pagerState = rememberPagerState { camList.size }
+    val activeCam = camList.getOrElse(pagerState.currentPage) { WebcamConfig() }
     var showFullscreen by remember { mutableStateOf(false) }
 
     Box(
@@ -809,7 +835,7 @@ fun WebcamCard(
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(Modifier.width(6.dp))
-                Text(webcamConfig.name, color = OnSurfaceDim, fontSize = 12.sp)
+                Text(activeCam.name, color = OnSurfaceDim, fontSize = 12.sp)
                 Spacer(Modifier.width(8.dp))
                 Box(
                     modifier = Modifier
@@ -818,28 +844,77 @@ fun WebcamCard(
                 ) {
                     Text("● Live", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
+                if (camList.size > 1) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("${pagerState.currentPage + 1}/${camList.size}", color = OnSurfaceDim.copy(alpha = 0.6f), fontSize = 11.sp)
+                }
             }
 
             if (host.isNotBlank()) {
-                val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType, apiKey) {
-                    webcamConfig.resolveStreamUrl(host, port, apiKey)
-                }
-
                 Box {
-                    WebcamPlayer(
-                        streamUrl = streamUrl,
-                        streamType = webcamConfig.streamType,
-                        flipH = webcamConfig.flipH,
-                        flipV = webcamConfig.flipV,
-                        rotate = webcamConfig.rotate,
-                        stunServer = webcamConfig.stunServer,
-                        iceUsername = webcamConfig.iceUsername,
-                        icePassword = webcamConfig.icePassword,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(220.dp)
-                    )
-                    // Zoom-Button unten rechts
+                    if (camList.size > 1) {
+                        HorizontalPager(
+                            state = pagerState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                        ) { page ->
+                            val cam = camList[page]
+                            val url = remember(host, port, cam.customUrl, cam.streamType, apiKey, page) {
+                                cam.resolveStreamUrl(host, port, apiKey)
+                            }
+                            WebcamPlayer(
+                                streamUrl = url,
+                                streamType = cam.streamType,
+                                flipH = cam.flipH,
+                                flipV = cam.flipV,
+                                rotate = cam.rotate,
+                                stunServer = cam.stunServer,
+                                iceUsername = cam.iceUsername,
+                                icePassword = cam.icePassword,
+                                zoomable = true,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        // Seitenindikator-Punkte (mittig unten)
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            camList.indices.forEach { idx ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(if (idx == pagerState.currentPage) 7.dp else 5.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (idx == pagerState.currentPage) Color.White
+                                            else Color.White.copy(alpha = 0.45f)
+                                        )
+                                )
+                            }
+                        }
+                    } else {
+                        val streamUrl = remember(host, port, activeCam.customUrl, activeCam.streamType, apiKey) {
+                            activeCam.resolveStreamUrl(host, port, apiKey)
+                        }
+                        WebcamPlayer(
+                            streamUrl = streamUrl,
+                            streamType = activeCam.streamType,
+                            flipH = activeCam.flipH,
+                            flipV = activeCam.flipV,
+                            rotate = activeCam.rotate,
+                            stunServer = activeCam.stunServer,
+                            iceUsername = activeCam.iceUsername,
+                            icePassword = activeCam.icePassword,
+                            zoomable = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                        )
+                    }
+                    // Vollbild-Button unten rechts
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
@@ -887,12 +962,12 @@ fun WebcamCard(
     }
 
     if (showFullscreen && host.isNotBlank()) {
-        val streamUrl = remember(host, port, webcamConfig.customUrl, webcamConfig.streamType, apiKey) {
-            webcamConfig.resolveStreamUrl(host, port, apiKey)
+        val streamUrl = remember(host, port, activeCam.customUrl, activeCam.streamType, apiKey, pagerState.currentPage) {
+            activeCam.resolveStreamUrl(host, port, apiKey)
         }
         WebcamFullscreenDialog(
             streamUrl = streamUrl,
-            webcamConfig = webcamConfig,
+            webcamConfig = activeCam,
             printProgress = printProgress,
             printSpeedMmPerSec = printSpeedMmPerSec,
             temperatures = temperatures,
@@ -945,6 +1020,7 @@ fun WebcamFullscreenDialog(
                 stunServer = webcamConfig.stunServer,
                 iceUsername = webcamConfig.iceUsername,
                 icePassword = webcamConfig.icePassword,
+                zoomable = true,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -1584,6 +1660,7 @@ fun PositionLabel(axis: String, value: Float?) {
 @Composable
 fun PowerDialog(
     devices: List<PowerDevice>,
+    isPrinting: Boolean = false,
     onToggle: (String, Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1613,6 +1690,10 @@ fun PowerDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 devices.forEach { device ->
                     val isOn = device.status == "on"
+                    // Während des Drucks darf das Drucker-Netzteil ("printer") NICHT
+                    // ausgeschaltet werden – LEDs/andere Geräte bleiben schaltbar.
+                    val isPrinterPower = device.name.contains("printer", ignoreCase = true)
+                    val lockedOff = isPrinting && isPrinterPower
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = Color(0xFF2A2A2A)
@@ -1632,8 +1713,14 @@ fun PowerDialog(
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
-                                    if (isOn) "Ein" else if (device.status == "error") "Fehler" else "Aus",
+                                    when {
+                                        lockedOff -> "Während Druck gesperrt"
+                                        isOn -> "Ein"
+                                        device.status == "error" -> "Fehler"
+                                        else -> "Aus"
+                                    },
                                     color = when {
+                                        lockedOff -> OnSurfaceDim
                                         isOn -> AccentYellow
                                         device.status == "error" -> ErrorRed
                                         else -> OnSurfaceDim
@@ -1643,7 +1730,11 @@ fun PowerDialog(
                             }
                             Switch(
                                 checked = isOn,
-                                onCheckedChange = { on -> onToggle(device.name, on) },
+                                enabled = !lockedOff,
+                                onCheckedChange = { on ->
+                                    // Ausschalten des Drucker-Netzteils im Druck blockieren
+                                    if (!(lockedOff && !on)) onToggle(device.name, on)
+                                },
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = Color.Black,
                                     checkedTrackColor = AccentYellow,
@@ -1665,13 +1756,147 @@ fun PowerDialog(
     )
 }
 
+// ── Drucker-Manager-Dialog ─────────────────────────────────────────────────────
+
+@Composable
+fun PrinterManagerDialog(
+    printers: List<PrinterProfile>,
+    selectedId: String,
+    onSelect: (String) -> Unit,
+    onAdd: (name: String, host: String, port: Int, apiKey: String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var showAddPrinter by remember { mutableStateOf(false) }
+
+    if (showAddPrinter) {
+        AddPrinterDialog(
+            onAdd = { name, host, port, key ->
+                onAdd(name, host, port, key)
+                showAddPrinter = false
+                onDismiss()
+            },
+            onDismiss = { showAddPrinter = false }
+        )
+        return
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1E1E),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(Icons.Default.Print, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(20.dp))
+                Text("Drucker", color = OnSurface, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                printers.forEach { printer ->
+                    val isSelected = printer.id == selectedId
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isSelected) AccentYellow.copy(alpha = 0.1f) else Color(0xFF2A2A2A),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(printer.id) }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.Print,
+                                contentDescription = null,
+                                tint = if (isSelected) AccentYellow else OnSurfaceDim,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(printer.name, color = if (isSelected) AccentYellow else OnSurface, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                Text("${printer.host}:${printer.port}", color = OnSurfaceDim, fontSize = 11.sp)
+                            }
+                            if (printers.size > 1) {
+                                IconButton(onClick = { onDelete(printer.id) }, modifier = Modifier.size(32.dp)) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Löschen", tint = ErrorRed, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+                Button(
+                    onClick = { showAddPrinter = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentYellow, contentColor = Color.Black)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Drucker hinzufügen", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Schließen", color = AccentYellow) }
+        }
+    )
+}
+
+@Composable
+fun AddPrinterDialog(
+    onAdd: (name: String, host: String, port: Int, apiKey: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf("Drucker") }
+    var host by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("7125") }
+    var apiKey by remember { mutableStateOf("") }
+
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = AccentYellow, focusedLabelColor = AccentYellow,
+        cursorColor = AccentYellow, focusedTextColor = OnSurface, unfocusedTextColor = OnSurface,
+        unfocusedBorderColor = Color(0xFF3A3A3A), unfocusedLabelColor = OnSurfaceDim
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1E1E),
+        title = { Text("Drucker hinzufügen", color = OnSurface, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = fieldColors)
+                OutlinedTextField(value = host, onValueChange = { host = it }, label = { Text("Host / IP oder Domain") }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = fieldColors)
+                OutlinedTextField(value = port, onValueChange = { port = it.filter { c -> c.isDigit() } }, label = { Text("Port (Standard: 7125)") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth(), colors = fieldColors)
+                OutlinedTextField(value = apiKey, onValueChange = { apiKey = it }, label = { Text("API Key (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = fieldColors)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onAdd(name.trim(), host.trim(), port.toIntOrNull() ?: 7125, apiKey.trim()) },
+                enabled = host.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = AccentYellow, contentColor = Color.Black)
+            ) { Text("Hinzufügen", fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Abbrechen", color = OnSurfaceDim) }
+        }
+    )
+}
+
 // ── Bottom Control Bar ─────────────────────────────────────────────────────────
 
 @Composable
 fun BottomControlBar(
     printerState: String,
+    printers: List<PrinterProfile> = emptyList(),
+    selectedPrinterId: String = "",
     onNavigateToAppConfig: () -> Unit,
     onOpenWebcamConfig: () -> Unit,
+    onOpenPrinterManager: () -> Unit = {},
+    onSelectPrinter: (String) -> Unit = {},
     onNavigateToMachine: () -> Unit,
     onNavigateToDriverSettings: () -> Unit = {},
     onStartPrint: () -> Unit = {},
@@ -1802,6 +2027,46 @@ fun BottomControlBar(
                     onDismissRequest = { showMenu = false },
                     modifier = Modifier.background(Color(0xFF1E1E1E))
                 ) {
+                    // Drucker-Sektion
+                    Text(
+                        "Drucker",
+                        color = Color(0xFF888888),
+                        fontSize = 11.sp,
+                        modifier = androidx.compose.ui.Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                    HorizontalDivider(color = Color(0xFF333333))
+                    if (printers.isNotEmpty()) {
+                        printers.forEach { printer ->
+                            val isActive = printer.id == selectedPrinterId
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(
+                                            printer.name,
+                                            color = if (isActive) AccentYellow else OnSurface,
+                                            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal
+                                        )
+                                        Text(printer.host, color = OnSurfaceDim, fontSize = 11.sp)
+                                    }
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        if (isActive) Icons.Default.CheckCircle else Icons.Default.Print,
+                                        contentDescription = null,
+                                        tint = if (isActive) AccentYellow else OnSurfaceDim,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = { showMenu = false; if (!isActive) onSelectPrinter(printer.id) }
+                            )
+                        }
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Drucker verwalten / hinzufügen", color = OnSurface) },
+                        leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
+                        onClick = { showMenu = false; onOpenPrinterManager() }
+                    )
+                    HorizontalDivider(color = Color(0xFF333333))
                     Text(
                         "Konfiguration",
                         color = Color(0xFF888888),
@@ -2365,6 +2630,7 @@ fun WebcamSettingsDialog(
 @Composable
 fun PrintFileRow(
     file: PrintFile,
+    printResult: Boolean? = null,
     onPrint: () -> Unit,
     onViewGCode: () -> Unit
 ) {
@@ -2400,6 +2666,16 @@ fun PrintFileRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(sizeText, color = OnSurfaceDim, fontSize = 11.sp)
+            }
+            // Druckergebnis-Symbol (grüner Haken = erfolgreich, rotes X = abgebrochen)
+            if (printResult != null) {
+                Icon(
+                    imageVector = if (printResult) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                    contentDescription = if (printResult) "Erfolgreich gedruckt" else "Abgebrochen",
+                    tint = if (printResult) Color(0xFF4CAF50) else Color(0xFFE53935),
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(4.dp))
             }
             // G-Code Viewer Button
             IconButton(onClick = onViewGCode, modifier = Modifier.size(36.dp)) {

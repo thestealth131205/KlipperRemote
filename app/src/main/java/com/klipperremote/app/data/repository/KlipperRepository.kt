@@ -1,11 +1,14 @@
 package com.klipperremote.app.data.repository
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import android.graphics.Bitmap
+import org.json.JSONArray
+import org.json.JSONObject
 import com.klipperremote.app.data.model.AppConfig
 import com.klipperremote.app.data.model.ConfigFile
 import com.klipperremote.app.data.model.ConsoleEntry
@@ -17,6 +20,7 @@ import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
+import com.klipperremote.app.data.model.PrinterProfile
 import com.klipperremote.app.data.model.PrinterSnapshot
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
@@ -24,9 +28,19 @@ import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
 import com.klipperremote.app.data.model.WebcamStreamType
 import com.klipperremote.app.data.network.KlipperClient
+import com.klipperremote.app.data.network.MoonrakerWsClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,13 +48,19 @@ import javax.inject.Singleton
 class KlipperRepository @Inject constructor(
     private val dataStore: DataStore<Preferences>
 ) {
+    // Eigener Scope für den WebSocket-Client (Singleton-Lebensdauer).
+    private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     companion object {
         val KEY_HOST = stringPreferencesKey("klipper_host")
         val KEY_PORT = intPreferencesKey("klipper_port")
         val KEY_USERNAME = stringPreferencesKey("klipper_username")
         val KEY_PASSWORD = stringPreferencesKey("klipper_password")
         val KEY_API_KEY = stringPreferencesKey("klipper_api_key")
+        // Mehrere Drucker-Profile (JSON-Array) + ID des aktuell ausgewählten Druckers.
+        val KEY_PRINTERS = stringPreferencesKey("printers_json")
+        val KEY_SELECTED_PRINTER = stringPreferencesKey("selected_printer_id")
         val KEY_CACHED_POWER_DEVICES = stringPreferencesKey("cached_power_devices")
+        val KEY_PRINT_RESULTS = stringPreferencesKey("print_results")
         val KEY_FAVORITE_MACROS = stringPreferencesKey("favorite_macros")
 
         val KEY_WEBCAM_NAME = stringPreferencesKey("webcam_name")
@@ -63,39 +83,73 @@ class KlipperRepository @Inject constructor(
         val KEY_APP_NOTIFY_INTERVAL = intPreferencesKey("app_notify_interval_sec")
     }
 
-    // Einmalig erkannte dynamische Objektnamen für die gebündelte Snapshot-Abfrage.
+    // Einmalig erkannte dynamische Objektnamen für die gebündelte HTTP-Snapshot-Abfrage.
     // Werden bei Konfigurationsänderung (saveConfig) zurückgesetzt.
     @Volatile private var cachedHeaterKeys: List<String>? = null
     @Volatile private var cachedFanGenericKeys: List<String>? = null
     @Volatile private var cachedHasFan: Boolean = false
 
-    val configFlow: Flow<KlipperConfig> = dataStore.data.map { prefs ->
-        KlipperConfig(
-            host = prefs[KEY_HOST] ?: "",
-            port = prefs[KEY_PORT] ?: 7125,
-            username = prefs[KEY_USERNAME] ?: "",
-            password = prefs[KEY_PASSWORD] ?: "",
-            apiKey = prefs[KEY_API_KEY] ?: ""
-        )
+    // ── WebSocket (Moonraker async push) ─────────────────────────────────────
+    @Volatile private var wsClient: MoonrakerWsClient? = null
+    private var wsSnapshotJob: Job? = null
+    private var wsConnectedJob: Job? = null
+
+    private val _wsSnapshot  = MutableStateFlow<PrinterSnapshot?>(null)
+    private val _wsConnected = MutableStateFlow(false)
+
+    /** Letzter via WebSocket-Push empfangener Drucker-Status (null = noch kein Update). */
+    val wsSnapshot:  StateFlow<PrinterSnapshot?> = _wsSnapshot.asStateFlow()
+
+    /** true, solange die WebSocket-Verbindung besteht und Daten empfangen werden. */
+    val wsConnected: StateFlow<Boolean>          = _wsConnected.asStateFlow()
+
+    init {
+        // Automatisch (re-)verbinden, wenn sich Host/Port/API-Key ändert (z. B.
+        // Druckerwechsel). distinctUntilChanged verhindert unnötige Reconnects bei
+        // anderen DataStore-Änderungen (Webcams, Favoriten, Ergebnisse …).
+        repoScope.launch {
+            configFlow.distinctUntilChanged().collect { config -> reinitWebSocket(config) }
+        }
     }
 
+    private fun reinitWebSocket(config: KlipperConfig) {
+        wsSnapshotJob?.cancel()
+        wsConnectedJob?.cancel()
+        wsClient?.disconnect()
+        wsClient = null
+        _wsConnected.value = false
+
+        if (config.host.isBlank()) return
+
+        val client = MoonrakerWsClient(config, repoScope)
+        wsClient = client
+        wsSnapshotJob  = repoScope.launch { client.snapshot.collect  { _wsSnapshot.value  = it } }
+        wsConnectedJob = repoScope.launch { client.connected.collect { _wsConnected.value = it } }
+        client.connect()
+    }
+
+    // ── Drucker-Profile (Multi-Drucker) ──────────────────────────────────────
+
+    /** Alle gespeicherten Drucker (inkl. Legacy-Migration bei erstem Zugriff). */
+    val profilesFlow: Flow<List<PrinterProfile>> = dataStore.data.map { decodeProfiles(it) }
+
+    /** ID des aktuell ausgewählten Druckers (fällt auf den ersten zurück). */
+    val selectedPrinterIdFlow: Flow<String> = dataStore.data.map { prefs ->
+        selectedProfile(prefs)?.id ?: ""
+    }
+
+    val configFlow: Flow<KlipperConfig> = dataStore.data.map { prefs ->
+        selectedProfile(prefs)?.toKlipperConfig() ?: KlipperConfig()
+    }
+
+    /** Alle Webcams des ausgewählten Druckers (für Multi-Webcam-Wischen). */
+    val webcamsFlow: Flow<List<WebcamConfig>> = dataStore.data.map { prefs ->
+        selectedProfile(prefs)?.webcams ?: emptyList()
+    }
+
+    /** Erste/einzelne Webcam des ausgewählten Druckers (Abwärtskompatibilität). */
     val webcamConfigFlow: Flow<WebcamConfig> = dataStore.data.map { prefs ->
-        WebcamConfig(
-            name = prefs[KEY_WEBCAM_NAME] ?: "cam 1",
-            customUrl = prefs[KEY_WEBCAM_URL] ?: "",
-            snapshotUrl = prefs[KEY_WEBCAM_SNAPSHOT_URL] ?: "",
-            streamType = prefs[KEY_WEBCAM_STREAM_TYPE]?.let {
-                runCatching { WebcamStreamType.valueOf(it) }.getOrNull()
-            } ?: WebcamStreamType.MJPEG,
-            fps = prefs[KEY_WEBCAM_FPS] ?: 15,
-            rotate = prefs[KEY_WEBCAM_ROTATE] ?: 0,
-            flipH = prefs[KEY_WEBCAM_FLIP_H] == "true",
-            flipV = prefs[KEY_WEBCAM_FLIP_V] == "true",
-            stunServer = prefs[KEY_WEBCAM_STUN] ?: "stun:stun.l.google.com:19302",
-            iceUsername = prefs[KEY_WEBCAM_ICE_USER] ?: "",
-            icePassword = prefs[KEY_WEBCAM_ICE_PASS] ?: "",
-            webcamPort = prefs[KEY_WEBCAM_PORT] ?: 0
-        )
+        selectedProfile(prefs)?.webcams?.firstOrNull() ?: WebcamConfig()
     }
 
     val appConfigFlow: Flow<AppConfig> = dataStore.data.map { prefs ->
@@ -124,30 +178,216 @@ class KlipperRepository @Inject constructor(
         cachedFanGenericKeys = null
         cachedHasFan = false
         dataStore.edit { prefs ->
-            prefs[KEY_HOST] = config.host
-            prefs[KEY_PORT] = config.port
-            prefs[KEY_USERNAME] = config.username
-            prefs[KEY_PASSWORD] = config.password
-            prefs[KEY_API_KEY] = config.apiKey
+            val list = decodeProfiles(prefs).toMutableList()
+            val selId = prefs[KEY_SELECTED_PRINTER]
+            val idx = list.indexOfFirst { it.id == selId }.let { if (it >= 0) it else if (list.isNotEmpty()) 0 else -1 }
+            if (idx >= 0) {
+                list[idx] = list[idx].copy(
+                    host = config.host, port = config.port, username = config.username,
+                    password = config.password, apiKey = config.apiKey
+                )
+                if (prefs[KEY_SELECTED_PRINTER] == null) prefs[KEY_SELECTED_PRINTER] = list[idx].id
+            } else {
+                val newP = PrinterProfile(
+                    id = java.util.UUID.randomUUID().toString(),
+                    host = config.host, port = config.port, username = config.username,
+                    password = config.password, apiKey = config.apiKey
+                )
+                list.add(newP)
+                prefs[KEY_SELECTED_PRINTER] = newP.id
+            }
+            prefs[KEY_PRINTERS] = encodeProfiles(list)
         }
     }
 
+    /** Schreibt die (einzelne) Webcam in den ausgewählten Drucker. */
     suspend fun saveWebcamConfig(config: WebcamConfig) {
         dataStore.edit { prefs ->
-            prefs[KEY_WEBCAM_NAME] = config.name
-            prefs[KEY_WEBCAM_URL] = config.customUrl
-            prefs[KEY_WEBCAM_SNAPSHOT_URL] = config.snapshotUrl
-            prefs[KEY_WEBCAM_STREAM_TYPE] = config.streamType.name
-            prefs[KEY_WEBCAM_FPS] = config.fps
-            prefs[KEY_WEBCAM_ROTATE] = config.rotate
-            prefs[KEY_WEBCAM_FLIP_H] = config.flipH.toString()
-            prefs[KEY_WEBCAM_FLIP_V] = config.flipV.toString()
-            prefs[KEY_WEBCAM_STUN] = config.stunServer
-            prefs[KEY_WEBCAM_ICE_USER] = config.iceUsername
-            prefs[KEY_WEBCAM_ICE_PASS] = config.icePassword
-            prefs[KEY_WEBCAM_PORT] = config.webcamPort
+            updateSelectedProfile(prefs) { p ->
+                val cams = p.webcams.toMutableList()
+                if (cams.isEmpty()) cams.add(config) else cams[0] = config
+                p.copy(webcams = cams)
+            }
         }
     }
+
+    /** Ersetzt die komplette Webcam-Liste des ausgewählten Druckers (Multi-Webcam). */
+    suspend fun saveWebcams(webcams: List<WebcamConfig>) {
+        dataStore.edit { prefs ->
+            updateSelectedProfile(prefs) { it.copy(webcams = webcams) }
+        }
+    }
+
+    /** Legt einen neuen Drucker an und wählt ihn aus. Gibt dessen ID zurück. */
+    suspend fun addPrinter(
+        name: String, host: String, port: Int, apiKey: String,
+        username: String = "", password: String = ""
+    ): String {
+        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false
+        val id = java.util.UUID.randomUUID().toString()
+        dataStore.edit { prefs ->
+            val list = decodeProfiles(prefs).toMutableList()
+            list.add(PrinterProfile(id = id, name = name, host = host, port = port,
+                username = username, password = password, apiKey = apiKey))
+            prefs[KEY_PRINTERS] = encodeProfiles(list)
+            prefs[KEY_SELECTED_PRINTER] = id
+        }
+        return id
+    }
+
+    /** Aktualisiert ein bestehendes Drucker-Profil (Name/Verbindung/Webcams). */
+    suspend fun updatePrinter(profile: PrinterProfile) {
+        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false
+        dataStore.edit { prefs ->
+            val list = decodeProfiles(prefs).toMutableList()
+            val idx = list.indexOfFirst { it.id == profile.id }
+            if (idx >= 0) {
+                list[idx] = profile
+                prefs[KEY_PRINTERS] = encodeProfiles(list)
+            }
+        }
+    }
+
+    /** Entfernt einen Drucker; wählt ggf. einen anderen aus. */
+    suspend fun deletePrinter(id: String) {
+        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false
+        dataStore.edit { prefs ->
+            val list = decodeProfiles(prefs).toMutableList()
+            list.removeAll { it.id == id }
+            prefs[KEY_PRINTERS] = encodeProfiles(list)
+            if (prefs[KEY_SELECTED_PRINTER] == id) {
+                prefs[KEY_SELECTED_PRINTER] = list.firstOrNull()?.id ?: ""
+            }
+        }
+    }
+
+    /** Wechselt den aktiven Drucker (löst WebSocket-Reconnect aus). */
+    suspend fun selectPrinter(id: String) {
+        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false
+        dataStore.edit { prefs -> prefs[KEY_SELECTED_PRINTER] = id }
+    }
+
+    // ── Profil-(De-)Serialisierung & Helfer ──────────────────────────────────
+
+    /** Liest die Profil-Liste oder migriert die Legacy-Einzelkonfiguration. */
+    private fun decodeProfiles(prefs: Preferences): List<PrinterProfile> {
+        val raw = prefs[KEY_PRINTERS]
+        if (!raw.isNullOrBlank()) {
+            return runCatching {
+                val arr = JSONArray(raw)
+                (0 until arr.length()).map { profileFromJson(arr.getJSONObject(it)) }
+            }.getOrDefault(emptyList())
+        }
+        // Migration: vorhandene Legacy-Einzelkonfiguration → ein Profil.
+        val legacyHost = prefs[KEY_HOST] ?: ""
+        if (legacyHost.isBlank()) return emptyList()
+        val legacyWebcam = WebcamConfig(
+            name = prefs[KEY_WEBCAM_NAME] ?: "cam 1",
+            customUrl = prefs[KEY_WEBCAM_URL] ?: "",
+            snapshotUrl = prefs[KEY_WEBCAM_SNAPSHOT_URL] ?: "",
+            streamType = prefs[KEY_WEBCAM_STREAM_TYPE]?.let {
+                runCatching { WebcamStreamType.valueOf(it) }.getOrNull()
+            } ?: WebcamStreamType.MJPEG,
+            fps = prefs[KEY_WEBCAM_FPS] ?: 15,
+            rotate = prefs[KEY_WEBCAM_ROTATE] ?: 0,
+            flipH = prefs[KEY_WEBCAM_FLIP_H] == "true",
+            flipV = prefs[KEY_WEBCAM_FLIP_V] == "true",
+            stunServer = prefs[KEY_WEBCAM_STUN] ?: "stun:stun.l.google.com:19302",
+            iceUsername = prefs[KEY_WEBCAM_ICE_USER] ?: "",
+            icePassword = prefs[KEY_WEBCAM_ICE_PASS] ?: "",
+            webcamPort = prefs[KEY_WEBCAM_PORT] ?: 0
+        )
+        return listOf(PrinterProfile(
+            id = "legacy",
+            name = "Drucker",
+            host = legacyHost,
+            port = prefs[KEY_PORT] ?: 7125,
+            username = prefs[KEY_USERNAME] ?: "",
+            password = prefs[KEY_PASSWORD] ?: "",
+            apiKey = prefs[KEY_API_KEY] ?: "",
+            webcams = if (legacyWebcam.customUrl.isNotBlank() || legacyWebcam.snapshotUrl.isNotBlank())
+                listOf(legacyWebcam) else emptyList()
+        ))
+    }
+
+    /** Das aktuell ausgewählte Profil (oder das erste, oder null). */
+    private fun selectedProfile(prefs: Preferences): PrinterProfile? {
+        val list = decodeProfiles(prefs)
+        val sel = prefs[KEY_SELECTED_PRINTER]
+        return list.firstOrNull { it.id == sel } ?: list.firstOrNull()
+    }
+
+    /** Wendet eine Transformation auf das ausgewählte Profil an (innerhalb edit{}). */
+    private fun updateSelectedProfile(prefs: MutablePreferences, transform: (PrinterProfile) -> PrinterProfile) {
+        val list = decodeProfiles(prefs).toMutableList()
+        if (list.isEmpty()) return
+        val selId = prefs[KEY_SELECTED_PRINTER]
+        val idx = list.indexOfFirst { it.id == selId }.let { if (it >= 0) it else 0 }
+        list[idx] = transform(list[idx])
+        prefs[KEY_PRINTERS] = encodeProfiles(list)
+    }
+
+    private fun encodeProfiles(list: List<PrinterProfile>): String =
+        JSONArray().apply { list.forEach { put(profileToJson(it)) } }.toString()
+
+    private fun profileToJson(p: PrinterProfile): JSONObject = JSONObject().apply {
+        put("id", p.id)
+        put("name", p.name)
+        put("host", p.host)
+        put("port", p.port)
+        put("username", p.username)
+        put("password", p.password)
+        put("apiKey", p.apiKey)
+        put("webcams", JSONArray().apply { p.webcams.forEach { put(webcamToJson(it)) } })
+    }
+
+    private fun profileFromJson(o: JSONObject): PrinterProfile {
+        val webcams = mutableListOf<WebcamConfig>()
+        o.optJSONArray("webcams")?.let { arr ->
+            for (i in 0 until arr.length()) webcams.add(webcamFromJson(arr.getJSONObject(i)))
+        }
+        return PrinterProfile(
+            id = o.optString("id"),
+            name = o.optString("name", "Drucker"),
+            host = o.optString("host", ""),
+            port = o.optInt("port", 7125),
+            username = o.optString("username", ""),
+            password = o.optString("password", ""),
+            apiKey = o.optString("apiKey", ""),
+            webcams = webcams
+        )
+    }
+
+    private fun webcamToJson(w: WebcamConfig): JSONObject = JSONObject().apply {
+        put("name", w.name)
+        put("customUrl", w.customUrl)
+        put("snapshotUrl", w.snapshotUrl)
+        put("streamType", w.streamType.name)
+        put("fps", w.fps)
+        put("rotate", w.rotate)
+        put("flipH", w.flipH)
+        put("flipV", w.flipV)
+        put("stunServer", w.stunServer)
+        put("iceUsername", w.iceUsername)
+        put("icePassword", w.icePassword)
+        put("webcamPort", w.webcamPort)
+    }
+
+    private fun webcamFromJson(o: JSONObject): WebcamConfig = WebcamConfig(
+        name = o.optString("name", "cam 1"),
+        customUrl = o.optString("customUrl", ""),
+        snapshotUrl = o.optString("snapshotUrl", ""),
+        streamType = runCatching { WebcamStreamType.valueOf(o.optString("streamType", "MJPEG")) }
+            .getOrDefault(WebcamStreamType.MJPEG),
+        fps = o.optInt("fps", 15),
+        rotate = o.optInt("rotate", 0),
+        flipH = o.optBoolean("flipH", false),
+        flipV = o.optBoolean("flipV", false),
+        stunServer = o.optString("stunServer", "stun:stun.l.google.com:19302"),
+        iceUsername = o.optString("iceUsername", ""),
+        icePassword = o.optString("icePassword", ""),
+        webcamPort = o.optInt("webcamPort", 0)
+    )
 
     suspend fun saveFavoriteMacros(favorites: List<String>) {
         dataStore.edit { prefs ->
@@ -436,5 +676,23 @@ class KlipperRepository @Inject constructor(
             if (idx <= 0) return@mapNotNull null
             PowerDevice(name = part.substring(0, idx), status = part.substring(idx + 1))
         }
+    }
+
+    // Druckergebnisse je Dateiname (true=erfolg, false=abgebrochen), als JSON persistiert.
+    suspend fun savePrintResults(results: Map<String, Boolean>) {
+        val obj = JSONObject()
+        results.forEach { (k, v) -> obj.put(k, v) }
+        dataStore.edit { prefs -> prefs[KEY_PRINT_RESULTS] = obj.toString() }
+    }
+
+    suspend fun loadPrintResults(): Map<String, Boolean> {
+        val encoded = dataStore.data.first()[KEY_PRINT_RESULTS] ?: return emptyMap()
+        if (encoded.isBlank()) return emptyMap()
+        return runCatching {
+            val obj = JSONObject(encoded)
+            buildMap {
+                obj.keys().forEach { key -> put(key, obj.optBoolean(key)) }
+            }
+        }.getOrDefault(emptyMap())
     }
 }
