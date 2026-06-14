@@ -701,10 +701,8 @@ fun TempCard(
 
     Box(
         modifier = modifier
-            .alpha(if (enabled) 1f else 0.4f)
             .clip(RoundedCornerShape(20.dp))
             .background(Color(0xFF1C1C1C))
-            .clickable(enabled = enabled) { onSetTemp() }
     ) {
         Column {
             Row(
@@ -755,6 +753,8 @@ fun TempCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .alpha(if (enabled) 1f else 0.4f)
+                    .clickable(enabled = enabled) { onSetTemp() }
                     .background(AccentYellow.copy(alpha = 0.12f))
                     .padding(vertical = 8.dp),
                 contentAlignment = Alignment.Center

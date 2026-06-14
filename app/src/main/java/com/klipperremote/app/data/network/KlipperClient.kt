@@ -853,21 +853,29 @@ class KlipperClient(private val config: KlipperConfig) {
     // und übergeben, damit hier kein zusätzlicher /objects/list-Aufruf nötig ist.
     suspend fun getPrinterSnapshot(
         heaterKeys: List<String>,
-        fanGenericKeys: List<String>
+        fanGenericKeys: List<String>,
+        includeFan: Boolean
     ): PrinterSnapshot = withContext(Dispatchers.IO) {
         fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
         val sb = StringBuilder(
             "$baseUrl/printer/objects/query?print_stats=&toolhead=&virtual_sdcard=" +
                 "&gcode_move=speed,speed_factor,extrude_factor" +
-                "&motion_report=live_extruder_velocity&fan=speed"
+                "&motion_report=live_extruder_velocity"
         )
+        // Das [fan]-Objekt (Bauteilkühlung) ist optional – nur abfragen, wenn es laut
+        // Objektliste existiert. Sonst lehnt Moonraker die GESAMTE Query mit HTTP 400 ab.
+        if (includeFan) sb.append("&fan=speed")
         heaterKeys.forEach { sb.append("&").append(enc(it)).append("=") }
         fanGenericKeys.forEach { sb.append("&").append(enc(it)).append("=speed") }
 
         val req = Request.Builder().url(sb.toString()).get().build()
-        val body = client.newCall(req).execute().body?.string() ?: return@withContext PrinterSnapshot()
+        val body = client.newCall(req).execute().body?.string()
+            ?: error("Leere Antwort auf printer.objects.query")
+        // Bei Fehlern (fehlendes "result"/"status") eine Exception werfen, damit der
+        // bisherige Druckerzustand erhalten bleibt und NICHT fälschlich auf "offline"
+        // zurückgesetzt wird (würde mitten im Druck einen Abbruch vortäuschen).
         val status = JSONObject(body).optJSONObject("result")?.optJSONObject("status")
-            ?: return@withContext PrinterSnapshot()
+            ?: error("Ungültige Antwort auf printer.objects.query")
 
         // Temperaturen
         val temps = mutableListOf<TemperatureInfo>()

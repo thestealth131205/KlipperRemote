@@ -67,6 +67,7 @@ class KlipperRepository @Inject constructor(
     // Werden bei Konfigurationsänderung (saveConfig) zurückgesetzt.
     @Volatile private var cachedHeaterKeys: List<String>? = null
     @Volatile private var cachedFanGenericKeys: List<String>? = null
+    @Volatile private var cachedHasFan: Boolean = false
 
     val configFlow: Flow<KlipperConfig> = dataStore.data.map { prefs ->
         KlipperConfig(
@@ -121,6 +122,7 @@ class KlipperRepository @Inject constructor(
         // Drucker/Verbindung geändert → erkannte Objektnamen neu ermitteln
         cachedHeaterKeys = null
         cachedFanGenericKeys = null
+        cachedHasFan = false
         dataStore.edit { prefs ->
             prefs[KEY_HOST] = config.host
             prefs[KEY_PORT] = config.port
@@ -190,10 +192,11 @@ class KlipperRepository @Inject constructor(
                             it.startsWith("heater_generic") || it.startsWith("temperature_sensor")
                     }
                     cachedFanGenericKeys = objs.filter { it.startsWith("fan_generic ") }
+                    cachedHasFan = objs.contains("fan")
                 }
             }
             val heaterKeys = cachedHeaterKeys ?: error("Objektliste nicht verfügbar")
-            client.getPrinterSnapshot(heaterKeys, cachedFanGenericKeys ?: emptyList())
+            client.getPrinterSnapshot(heaterKeys, cachedFanGenericKeys ?: emptyList(), cachedHasFan)
         }
     }
 
