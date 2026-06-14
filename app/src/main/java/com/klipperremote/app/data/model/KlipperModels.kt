@@ -187,6 +187,22 @@ data class PrintStats(
     val extrudeFactor: Float = 1f        // Extrusionsfaktor (1.0 = 100 %)
 )
 
+/**
+ * Gebündelter Drucker-Status für die Statusanzeige oben in der App. Wird während
+ * eines Drucks mit EINER einzigen printer.objects.query-Anfrage befüllt
+ * (Temperaturen + Position + Druckfortschritt + Druckstatistik + Tuning), um die
+ * Anzahl der API-Anfragen an Moonraker zu minimieren.
+ */
+data class PrinterSnapshot(
+    val temperatures: List<TemperatureInfo> = emptyList(),
+    val printerState: String = "offline",
+    val position: KlipperPosition = KlipperPosition(),
+    val printProgress: Float? = null,
+    val printSpeedMmPerSec: Float? = null,
+    val printStats: PrintStats? = null,
+    val tuningData: TuningData = TuningData()
+)
+
 data class ConsoleEntry(
     val message: String,
     val time: Double = 0.0,     // Unix-Zeit (Sekunden) der Meldung

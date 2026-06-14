@@ -24,6 +24,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
@@ -196,12 +197,13 @@ fun HomeScreen(
                             Box(
                                 modifier = Modifier
                                     .size(32.dp)
+                                    .alpha(if (isPrinting) 0.4f else 1f)
                                     .clip(CircleShape)
                                     .background(
                                         if (isPowerOn) AccentYellow.copy(alpha = 0.15f)
                                         else Color.Transparent
                                     )
-                                    .clickable { showPowerDialog = true },
+                                    .clickable(enabled = !isPrinting) { showPowerDialog = true },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -263,6 +265,7 @@ fun HomeScreen(
                         } else {
                             TemperatureGrid(
                                 temps = uiState.temperatures,
+                                enabled = !isPrinting,
                                 onSetTemp = { setTempTarget = it }
                             )
                         }
@@ -322,9 +325,10 @@ fun HomeScreen(
                         SectionHeader(title = "Bewegen") {
                             Box(
                                 modifier = Modifier
+                                    .alpha(if (isPrinting) 0.4f else 1f)
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(Color(0xFF2A2A2A))
-                                    .clickable { viewModel.motorsOff() }
+                                    .clickable(enabled = !isPrinting) { viewModel.motorsOff() }
                                     .padding(horizontal = 10.dp, vertical = 5.dp),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -342,6 +346,7 @@ fun HomeScreen(
                     item {
                         BewegungsSection(
                             position = uiState.position,
+                            enabled = !isPrinting,
                             onJog = { axis, dist -> viewModel.jogMove(axis, dist) },
                             onHome = { axes -> viewModel.homeAxes(axes) },
                             pinnedGcodes = uiState.pinnedGcodes,
@@ -642,6 +647,7 @@ fun SectionHeader(
 @Composable
 fun TemperatureGrid(
     temps: List<TemperatureInfo>,
+    enabled: Boolean = true,
     onSetTemp: (TemperatureInfo) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -651,6 +657,7 @@ fun TemperatureGrid(
                     TempCard(
                         temp = temp,
                         modifier = Modifier.weight(1f),
+                        enabled = enabled,
                         onSetTemp = { onSetTemp(temp) }
                     )
                 }
@@ -666,6 +673,7 @@ fun TemperatureGrid(
 fun TempCard(
     temp: TemperatureInfo,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onSetTemp: () -> Unit
 ) {
     val displayName = when {
@@ -693,9 +701,10 @@ fun TempCard(
 
     Box(
         modifier = modifier
+            .alpha(if (enabled) 1f else 0.4f)
             .clip(RoundedCornerShape(20.dp))
             .background(Color(0xFF1C1C1C))
-            .clickable { onSetTemp() }
+            .clickable(enabled = enabled) { onSetTemp() }
     ) {
         Column {
             Row(
@@ -1036,6 +1045,7 @@ fun WebcamFullscreenDialog(
 @Composable
 fun BewegungsSection(
     position: KlipperPosition,
+    enabled: Boolean = true,
     onJog: (axis: String, dist: Float) -> Unit,
     onHome: (axes: String) -> Unit,
     pinnedGcodes: List<String> = emptyList(),
@@ -1066,6 +1076,7 @@ fun BewegungsSection(
                     .weight(2f)
                     .fillMaxHeight(),
                 stepMm = stepMm,
+                enabled = enabled,
                 onJog = onJog,
                 onHome = { onHome("XY") }
             )
@@ -1075,6 +1086,7 @@ fun BewegungsSection(
                     .weight(1f)
                     .fillMaxHeight(),
                 stepMm = stepMm,
+                enabled = enabled,
                 onJog = onJog,
                 onHome = { onHome("Z") }
             )
@@ -1091,6 +1103,7 @@ fun BewegungsSection(
         // Position strip
         PositionStrip(
             position = position,
+            enabled = enabled,
             onHomeAll = { onHome("") },
             onMoveToXyz = onMoveToXyz
         )
@@ -1099,6 +1112,7 @@ fun BewegungsSection(
             MacroPillGrid(
                 commands = allCommands,
                 favorites = favoriteMacros,
+                enabled = enabled,
                 onSend = onSendGcode,
                 onToggleFavorite = onToggleFavorite
             )
@@ -1110,6 +1124,7 @@ fun BewegungsSection(
 fun MacroPillGrid(
     commands: List<String>,
     favorites: List<String>,
+    enabled: Boolean = true,
     onSend: (String) -> Unit,
     onToggleFavorite: (String) -> Unit
 ) {
@@ -1130,6 +1145,7 @@ fun MacroPillGrid(
                         cmd = cmd,
                         isFavorite = cmd in favoriteSet,
                         canAddFavorite = favorites.size < 3,
+                        enabled = enabled,
                         onSend = { onSend(cmd) },
                         onToggleFavorite = { onToggleFavorite(cmd) }
                     )
@@ -1146,19 +1162,20 @@ fun MacroPill(
     cmd: String,
     isFavorite: Boolean,
     canAddFavorite: Boolean,
+    enabled: Boolean = true,
     onSend: () -> Unit,
     onToggleFavorite: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    Box(modifier = modifier) {
+    Box(modifier = modifier.alpha(if (enabled) 1f else 0.4f)) {
         Surface(
             shape = RoundedCornerShape(50.dp),
             color = if (isFavorite) Color(0xFF1C2816) else Color(0xFF1C1C1C),
             modifier = Modifier
                 .fillMaxWidth()
-                .pointerInput(Unit) {
+                .pointerInput(enabled) {
                     detectTapGestures(
-                        onTap = { onSend() },
+                        onTap = { if (enabled) onSend() },
                         onLongPress = { showMenu = true }
                     )
                 }
@@ -1220,6 +1237,7 @@ fun MacroPill(
 fun XyPadCard(
     modifier: Modifier = Modifier,
     stepMm: Float,
+    enabled: Boolean = true,
     onJog: (axis: String, dist: Float) -> Unit,
     onHome: () -> Unit
 ) {
@@ -1240,21 +1258,22 @@ fun XyPadCard(
                 Text("Y", color = OnSurfaceDim, fontSize = 10.sp, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(2.dp))
                 // Up
-                JogArrowButton(icon = Icons.Default.KeyboardArrowUp) { onJog("Y", stepMm) }
+                JogArrowButton(icon = Icons.Default.KeyboardArrowUp, enabled = enabled) { onJog("Y", stepMm) }
                 // Middle row
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Text("X", color = OnSurfaceDim, fontSize = 10.sp, modifier = Modifier.width(16.dp))
-                    JogArrowButton(icon = Icons.Default.KeyboardArrowLeft) { onJog("X", -stepMm) }
+                    JogArrowButton(icon = Icons.Default.KeyboardArrowLeft, enabled = enabled) { onJog("X", -stepMm) }
                     // Home button center
                     Box(
                         modifier = Modifier
                             .size(36.dp)
+                            .alpha(if (enabled) 1f else 0.4f)
                             .clip(CircleShape)
                             .background(Color(0xFF2A2A2A))
-                            .clickable { onHome() },
+                            .clickable(enabled = enabled) { onHome() },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -1264,11 +1283,11 @@ fun XyPadCard(
                             modifier = Modifier.size(18.dp)
                         )
                     }
-                    JogArrowButton(icon = Icons.Default.KeyboardArrowRight) { onJog("X", stepMm) }
+                    JogArrowButton(icon = Icons.Default.KeyboardArrowRight, enabled = enabled) { onJog("X", stepMm) }
                     Spacer(Modifier.width(16.dp))
                 }
                 // Down
-                JogArrowButton(icon = Icons.Default.KeyboardArrowDown) { onJog("Y", -stepMm) }
+                JogArrowButton(icon = Icons.Default.KeyboardArrowDown, enabled = enabled) { onJog("Y", -stepMm) }
             }
         }
     }
@@ -1278,6 +1297,7 @@ fun XyPadCard(
 fun ZPadCard(
     modifier: Modifier = Modifier,
     stepMm: Float,
+    enabled: Boolean = true,
     onJog: (axis: String, dist: Float) -> Unit,
     onHome: () -> Unit
 ) {
@@ -1294,14 +1314,15 @@ fun ZPadCard(
             verticalArrangement = Arrangement.SpaceEvenly
         ) {
             Text("Z", color = OnSurfaceDim, fontSize = 10.sp, fontWeight = FontWeight.Medium)
-            JogArrowButton(icon = Icons.Default.KeyboardArrowUp) { onJog("Z", stepMm) }
+            JogArrowButton(icon = Icons.Default.KeyboardArrowUp, enabled = enabled) { onJog("Z", stepMm) }
             // Home Z
             Box(
                 modifier = Modifier
                     .size(36.dp)
+                    .alpha(if (enabled) 1f else 0.4f)
                     .clip(CircleShape)
                     .background(Color(0xFF2A2A2A))
-                    .clickable { onHome() },
+                    .clickable(enabled = enabled) { onHome() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -1311,7 +1332,7 @@ fun ZPadCard(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            JogArrowButton(icon = Icons.Default.KeyboardArrowDown) { onJog("Z", -stepMm) }
+            JogArrowButton(icon = Icons.Default.KeyboardArrowDown, enabled = enabled) { onJog("Z", -stepMm) }
         }
     }
 }
@@ -1367,14 +1388,16 @@ fun StepSelectorCard(
 @Composable
 fun JogArrowButton(
     icon: ImageVector,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     Box(
         modifier = Modifier
             .size(40.dp)
+            .alpha(if (enabled) 1f else 0.4f)
             .clip(RoundedCornerShape(8.dp))
             .background(Color(0xFF252525))
-            .clickable { onClick() },
+            .clickable(enabled = enabled) { onClick() },
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -1389,6 +1412,7 @@ fun JogArrowButton(
 @Composable
 fun PositionStrip(
     position: KlipperPosition,
+    enabled: Boolean = true,
     onHomeAll: () -> Unit,
     onMoveToXyz: (x: Float?, y: Float?, z: Float?, feedrate: Int) -> Unit
 ) {
@@ -1413,9 +1437,10 @@ fun PositionStrip(
             Box(
                 modifier = Modifier
                     .size(28.dp)
+                    .alpha(if (enabled) 1f else 0.4f)
                     .clip(CircleShape)
                     .background(Color(0xFF2A2A2A))
-                    .clickable { showMoveDialog = true },
+                    .clickable(enabled = enabled) { showMoveDialog = true },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -1430,9 +1455,10 @@ fun PositionStrip(
             Box(
                 modifier = Modifier
                     .size(28.dp)
+                    .alpha(if (enabled) 1f else 0.4f)
                     .clip(CircleShape)
                     .background(Color(0xFF2A2A2A))
-                    .clickable { onHomeAll() },
+                    .clickable(enabled = enabled) { onHomeAll() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -1730,12 +1756,15 @@ fun BottomControlBar(
                 )
             }
 
+            // Abkühlen ist während des Drucks gesperrt (würde den Druck stören)
+            val isPrinting = printerState == "printing" || printerState == "paused"
             Text(
                 "❄️",
                 fontSize = 22.sp,
                 modifier = Modifier
+                    .alpha(if (isPrinting) 0.4f else 1f)
                     .clip(CircleShape)
-                    .clickable { onCoolDown() }
+                    .clickable(enabled = !isPrinting) { onCoolDown() }
                     .padding(2.dp)
             )
 

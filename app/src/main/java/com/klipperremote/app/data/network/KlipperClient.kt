@@ -14,6 +14,7 @@ import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
+import com.klipperremote.app.data.model.PrinterSnapshot
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.TuningData
@@ -831,6 +832,149 @@ class KlipperClient(private val config: KlipperConfig) {
                 sendGcodeInternal(sb.toString())
             }
         }
+
+    // Rohliste aller Klipper-Objekte (für die einmalige Erkennung dynamischer
+    // Objektnamen wie extruder1, heater_generic X, temperature_sensor X, fan_generic X).
+    suspend fun getObjectList(): List<String> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$baseUrl/printer/objects/list").get().build()
+            val body = client.newCall(req).execute().body?.string() ?: return@withContext emptyList()
+            val objects = JSONObject(body).optJSONObject("result")?.optJSONArray("objects")
+                ?: return@withContext emptyList()
+            (0 until objects.length()).map { objects.getString(it) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // Gebündelter Status für die App-Statusanzeige: EINE einzige printer.objects.query
+    // liefert Temperaturen, Druckerzustand, Position, Fortschritt, Druckstatistik und
+    // Tuning-Werte. heaterKeys/fanGenericKeys werden vom Repository einmalig erkannt
+    // und übergeben, damit hier kein zusätzlicher /objects/list-Aufruf nötig ist.
+    suspend fun getPrinterSnapshot(
+        heaterKeys: List<String>,
+        fanGenericKeys: List<String>
+    ): PrinterSnapshot = withContext(Dispatchers.IO) {
+        fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+        val sb = StringBuilder(
+            "$baseUrl/printer/objects/query?print_stats=&toolhead=&virtual_sdcard=" +
+                "&gcode_move=speed,speed_factor,extrude_factor" +
+                "&motion_report=live_extruder_velocity&fan=speed"
+        )
+        heaterKeys.forEach { sb.append("&").append(enc(it)).append("=") }
+        fanGenericKeys.forEach { sb.append("&").append(enc(it)).append("=speed") }
+
+        val req = Request.Builder().url(sb.toString()).get().build()
+        val body = client.newCall(req).execute().body?.string() ?: return@withContext PrinterSnapshot()
+        val status = JSONObject(body).optJSONObject("result")?.optJSONObject("status")
+            ?: return@withContext PrinterSnapshot()
+
+        // Temperaturen
+        val temps = mutableListOf<TemperatureInfo>()
+        for (key in heaterKeys) {
+            val obj = status.optJSONObject(key) ?: continue
+            val current = obj.optDouble("temperature", -1.0).toFloat()
+            if (current < 0) continue
+            temps.add(
+                TemperatureInfo(
+                    name = key,
+                    current = current,
+                    target = obj.optDouble("target", 0.0).toFloat(),
+                    power = obj.optDouble("power", 0.0).toFloat()
+                )
+            )
+        }
+
+        // Druckerzustand
+        val ps = status.optJSONObject("print_stats")
+        val rawState = ps?.optString("state", "") ?: ""
+        val mapped = when (rawState) {
+            "printing" -> "printing"
+            "paused"   -> "paused"
+            "error"    -> "error"
+            else       -> "ready"
+        }
+
+        // Position + max_velocity aus toolhead
+        val toolhead = status.optJSONObject("toolhead")
+        val posArr = toolhead?.optJSONArray("position")
+        val position = if (posArr != null) {
+            KlipperPosition(
+                x = posArr.optDouble(0, Double.NaN).takeIf { !it.isNaN() }?.toFloat(),
+                y = posArr.optDouble(1, Double.NaN).takeIf { !it.isNaN() }?.toFloat(),
+                z = posArr.optDouble(2, Double.NaN).takeIf { !it.isNaN() }?.toFloat()
+            )
+        } else KlipperPosition()
+
+        val gcodeMove = status.optJSONObject("gcode_move")
+        val motionRep = status.optJSONObject("motion_report")
+        val vSdcard   = status.optJSONObject("virtual_sdcard")
+
+        // Fortschritt + Druckstatistik nur während aktivem Druck/Pause
+        val printing = rawState == "printing" || rawState == "paused"
+        var progress: Float? = null
+        var speedMmS: Float? = null
+        var stats: PrintStats? = null
+        if (printing && ps != null) {
+            val filename = ps.optString("filename", "")
+            val printDuration = ps.optDouble("print_duration", 0.0)
+            val fileProgress = vSdcard?.optDouble("progress", 0.0)?.toFloat() ?: 0f
+            progress = computeProgress(printDuration, filename, fileProgress)
+
+            val speedMmMin = gcodeMove?.optDouble("speed", -1.0) ?: -1.0
+            speedMmS = if (speedMmMin > 0) (speedMmMin / 60.0).toFloat() else null
+
+            val info = ps.optJSONObject("info")
+            val currentLayer = info?.optInt("current_layer", -1)?.takeIf { it > 0 }
+            val totalLayers  = info?.optInt("total_layer", -1)?.takeIf { it > 0 }
+
+            val liveExtVel = motionRep?.optDouble("live_extruder_velocity", 0.0)?.toFloat() ?: 0f
+            val volumetricFlow = if (liveExtVel > 0.001f) {
+                val r = 1.75f / 2f
+                liveExtVel * Math.PI.toFloat() * r * r
+            } else null
+
+            stats = PrintStats(
+                filename      = filename,
+                printDuration = printDuration.toFloat(),
+                progress      = progress,
+                filamentUsed  = ps.optDouble("filament_used", 0.0).toFloat(),
+                currentLayer  = currentLayer,
+                totalLayers   = totalLayers,
+                maxVelocity   = toolhead?.optDouble("max_velocity", 0.0)?.toFloat()?.takeIf { it > 0 },
+                volumetricFlow = volumetricFlow,
+                speedFactor   = gcodeMove?.optDouble("speed_factor", 1.0)?.toFloat() ?: 1f,
+                extrudeFactor = gcodeMove?.optDouble("extrude_factor", 1.0)?.toFloat() ?: 1f
+            )
+        }
+
+        // Tuning-Werte
+        val speedFactor   = ((gcodeMove?.optDouble("speed_factor", 1.0) ?: 1.0) * 100).toInt()
+        val extrudeFactor = ((gcodeMove?.optDouble("extrude_factor", 1.0) ?: 1.0) * 100).toInt()
+        val partFan       = ((status.optJSONObject("fan")?.optDouble("speed", 0.0) ?: 0.0) * 100).toInt()
+        val fans = fanGenericKeys.mapNotNull { key ->
+            val speed = status.optJSONObject(key)?.optDouble("speed", 0.0) ?: return@mapNotNull null
+            val keyName = key.removePrefix("fan_generic ")
+            val displayName = keyName.split("_").joinToString(" ") { it.replaceFirstChar { c -> c.uppercaseChar() } }
+            FanInfo(keyName = keyName, displayName = displayName, speedPercent = (speed * 100).toInt())
+        }
+        val tuning = TuningData(
+            speedFactor = speedFactor,
+            extrudeFactor = extrudeFactor,
+            partCoolingFan = partFan,
+            fans = fans
+        )
+
+        PrinterSnapshot(
+            temperatures = temps.sortedBy { it.name },
+            printerState = mapped,
+            position = position,
+            printProgress = progress,
+            printSpeedMmPerSec = speedMmS,
+            printStats = stats,
+            tuningData = tuning
+        )
+    }
 
     // Aktuelle Druckkopf-Position abfragen
     suspend fun getPosition(): KlipperPosition = withContext(Dispatchers.IO) {

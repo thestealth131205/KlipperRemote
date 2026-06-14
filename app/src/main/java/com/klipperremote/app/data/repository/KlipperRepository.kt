@@ -17,6 +17,7 @@ import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
+import com.klipperremote.app.data.model.PrinterSnapshot
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.TuningData
@@ -61,6 +62,11 @@ class KlipperRepository @Inject constructor(
         val KEY_APP_POWER_INTERVAL = intPreferencesKey("app_power_interval_sec")
         val KEY_APP_NOTIFY_INTERVAL = intPreferencesKey("app_notify_interval_sec")
     }
+
+    // Einmalig erkannte dynamische Objektnamen für die gebündelte Snapshot-Abfrage.
+    // Werden bei Konfigurationsänderung (saveConfig) zurückgesetzt.
+    @Volatile private var cachedHeaterKeys: List<String>? = null
+    @Volatile private var cachedFanGenericKeys: List<String>? = null
 
     val configFlow: Flow<KlipperConfig> = dataStore.data.map { prefs ->
         KlipperConfig(
@@ -112,6 +118,9 @@ class KlipperRepository @Inject constructor(
     }
 
     suspend fun saveConfig(config: KlipperConfig) {
+        // Drucker/Verbindung geändert → erkannte Objektnamen neu ermitteln
+        cachedHeaterKeys = null
+        cachedFanGenericKeys = null
         dataStore.edit { prefs ->
             prefs[KEY_HOST] = config.host
             prefs[KEY_PORT] = config.port
@@ -160,6 +169,32 @@ class KlipperRepository @Inject constructor(
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
         return runCatching { KlipperClient(config).getPrinterStatus() }
+    }
+
+    /**
+     * Holt alle für die Statusanzeige nötigen Werte mit EINER einzigen
+     * printer.objects.query-Anfrage. Die dynamischen Objektnamen werden nur beim
+     * ersten Aufruf (oder nach Konfigurationswechsel) per /objects/list ermittelt
+     * und danach zwischengespeichert → im Normalfall genau eine Anfrage pro Abruf.
+     */
+    suspend fun getPrinterSnapshot(): Result<PrinterSnapshot> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching {
+            val client = KlipperClient(config)
+            if (cachedHeaterKeys == null) {
+                val objs = client.getObjectList()
+                if (objs.isNotEmpty()) {
+                    cachedHeaterKeys = objs.filter {
+                        it.startsWith("extruder") || it.startsWith("heater_bed") ||
+                            it.startsWith("heater_generic") || it.startsWith("temperature_sensor")
+                    }
+                    cachedFanGenericKeys = objs.filter { it.startsWith("fan_generic ") }
+                }
+            }
+            val heaterKeys = cachedHeaterKeys ?: error("Objektliste nicht verfügbar")
+            client.getPrinterSnapshot(heaterKeys, cachedFanGenericKeys ?: emptyList())
+        }
     }
 
     suspend fun setTemperature(heaterName: String, target: Float): Result<Unit> {

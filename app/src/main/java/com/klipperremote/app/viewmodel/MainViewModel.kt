@@ -192,51 +192,60 @@ class MainViewModel @Inject constructor(
         autoDetectWebcamIfNeeded()
     }
 
+    /** true, solange ein Druck läuft oder pausiert ist (Steuerung wird dann gesperrt). */
+    private fun isPrintActive(): Boolean {
+        val s = _uiState.value.printerState
+        return s == "printing" || s == "paused"
+    }
+
     private fun startPolling() {
-        // Temperatur, HIGH-Priorität (nur im Vordergrund) – Intervall aus AppConfig
+        // Status-Schleife (Vordergrund) – Intervall = Status-/Temperatur-Intervall aus AppConfig.
+        // WÄHREND eines Drucks werden ALLE oben angezeigten Statuswerte (Temperaturen,
+        // Position, Druckfortschritt, Druckstatistik, Tuning) mit EINER EINZIGEN
+        // printer.objects.query-Anfrage geholt. Im Leerlauf nur die Temperaturen.
         viewModelScope.launch {
             while (true) {
-                if (!connectionPaused && appInForeground) queue.enqueueHigh { fetchTemperaturesInternal() }
+                if (!connectionPaused && appInForeground) {
+                    if (isPrintActive()) queue.enqueueHigh { fetchPrinterSnapshotInternal() }
+                    else queue.enqueueHigh { fetchTemperaturesInternal() }
+                }
                 delay(tempIntervalMs)
             }
         }
-        // Hintergrunddaten, NORMAL-Priorität (nur im Vordergrund) – Intervall aus AppConfig
+        // Hintergrunddaten (Vordergrund, NUR im Leerlauf) – Intervall aus AppConfig.
+        // Während des Drucks übernimmt die Snapshot-Schleife oben alles; hier wird nur
+        // im Leerlauf der Druckerstatus + die Position aktualisiert (um Druckbeginn zu
+        // erkennen). Fortschritt/Geschwindigkeit/Statistik sind im Leerlauf ohnehin null.
         viewModelScope.launch {
-            if (!connectionPaused && appInForeground) queue.enqueueNormal { fetchPowerDevicesInternal() }
-            var bgCounter = 0
+            if (!connectionPaused && appInForeground && !isPrintActive()) {
+                queue.enqueueNormal { fetchPowerDevicesInternal() }
+            }
             while (true) {
                 delay(backgroundIntervalMs)
-                if (connectionPaused || !appInForeground) continue
-                bgCounter++
+                if (connectionPaused || !appInForeground || isPrintActive()) continue
                 queue.enqueueNormal { fetchPrinterStatusInternal() }
                 queue.enqueueNormal { fetchPositionInternal() }
-                queue.enqueueNormal { fetchPrintProgressInternal() }
-                queue.enqueueNormal { fetchPrintSpeedInternal() }
-                queue.enqueueNormal { fetchPrintStatsInternal() }
                 queue.enqueueNormal { syncPrintNotification() }
-                if (bgCounter % 2 == 0) {
-                    queue.enqueueNormal { fetchTuningDataInternal() }
-                }
             }
         }
-        // Power-Geräte seltener aktualisieren (nur im Vordergrund) – Intervall aus AppConfig
+        // Power-Geräte seltener aktualisieren (Vordergrund) – Intervall aus AppConfig.
+        // Während des Drucks werden Energiegeräte NICHT abgefragt.
         viewModelScope.launch {
             while (true) {
                 delay(powerIntervalMs)
-                if (!connectionPaused && appInForeground) queue.enqueueNormal { fetchPowerDevicesInternal() }
+                if (!connectionPaused && appInForeground && !isPrintActive()) {
+                    queue.enqueueNormal { fetchPowerDevicesInternal() }
+                }
             }
         }
-        // Hintergrund-Modus: nur die für die Benachrichtigung nötigen Daten –
-        // Intervall aus AppConfig. Schont den Klipper-Rechner, wenn die App nicht
-        // im Vordergrund ist (oder versehentlich offen bleibt).
+        // Hintergrund-Modus: nur die für die Benachrichtigung nötigen Daten – mit EINER
+        // einzigen Snapshot-Anfrage je Intervall. Schont den Klipper-Rechner, wenn die
+        // App nicht im Vordergrund ist (oder versehentlich offen bleibt).
         viewModelScope.launch {
             while (true) {
                 delay(notifyIntervalMs)
                 if (connectionPaused || appInForeground) continue
-                queue.enqueueNormal { fetchPrinterStatusInternal() }
-                queue.enqueueNormal { fetchPrintProgressInternal() }
-                queue.enqueueNormal { fetchPrintStatsInternal() }
-                queue.enqueueNormal { syncPrintNotification() }
+                queue.enqueueNormal { fetchPrinterSnapshotInternal() }
             }
         }
     }
@@ -317,31 +326,39 @@ class MainViewModel @Inject constructor(
             }
     }
 
+    /**
+     * Holt mit EINER einzigen API-Anfrage alle Statuswerte (Temperaturen, Position,
+     * Fortschritt, Druckstatistik, Tuning + Druckerzustand) und aktualisiert den
+     * gesamten UI-State auf einmal. Wird während des Drucks im Status-Intervall sowie
+     * im Hintergrund-Modus für die Benachrichtigung verwendet.
+     */
+    private suspend fun fetchPrinterSnapshotInternal() {
+        repository.getPrinterSnapshot()
+            .onSuccess { snap ->
+                _uiState.update {
+                    it.copy(
+                        temperatures = snap.temperatures,
+                        isLoading = false,
+                        printerState = snap.printerState,
+                        position = snap.position,
+                        printProgress = snap.printProgress,
+                        printSpeedMmPerSec = snap.printSpeedMmPerSec,
+                        printStats = snap.printStats,
+                        tuningData = snap.tuningData
+                    )
+                }
+                reportConnectionResult(success = true)
+                syncPrintNotification()
+            }
+            .onFailure {
+                reportConnectionResult(success = false)
+            }
+    }
+
     private suspend fun fetchPrinterStatusInternal() {
         repository.getPrinterStatus()
             .onSuccess { status ->
                 _uiState.update { it.copy(printerState = status.state) }
-            }
-    }
-
-    private suspend fun fetchPrintProgressInternal() {
-        repository.getPrintProgress()
-            .onSuccess { progress ->
-                _uiState.update { it.copy(printProgress = progress) }
-            }
-    }
-
-    private suspend fun fetchPrintSpeedInternal() {
-        repository.getPrintSpeed()
-            .onSuccess { speed ->
-                _uiState.update { it.copy(printSpeedMmPerSec = speed) }
-            }
-    }
-
-    private suspend fun fetchPrintStatsInternal() {
-        repository.getPrintStats()
-            .onSuccess { stats ->
-                _uiState.update { it.copy(printStats = stats) }
             }
     }
 
