@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Canvas
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
@@ -30,7 +31,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -49,6 +55,7 @@ import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.PrinterProfile
+import com.klipperremote.app.data.model.RoutineData
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
@@ -64,6 +71,7 @@ fun HomeScreen(
     onOpenGCodeViewer: (String) -> Unit = {},
     onNavigateToCrashLog: () -> Unit = {},
     onNavigateToSlicer: () -> Unit = {},
+    onNavigateToRoutineEditor: (String?) -> Unit = {},
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -137,264 +145,221 @@ fun HomeScreen(
                 }
             }
             else -> {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(BackgroundDark)
-                        .padding(padding),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    // Error banner
+                val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+                val isPrinting = uiState.printerState == "printing" || uiState.printerState == "paused"
+                val ctx = LocalContext.current
+
+                // ── Shared content blocks (composable lambdas) ───────────────────────
+
+                val ErrorBannerBlock: @Composable () -> Unit = {
                     uiState.error?.let { err ->
-                        item {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.Warning,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Text(
-                                        err,
-                                        color = MaterialTheme.colorScheme.error,
-                                        fontSize = 13.sp,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    IconButton(
-                                        onClick = { viewModel.clearError() },
-                                        modifier = Modifier.size(20.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Close,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
+                                Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                                Text(err, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { viewModel.clearError() }, modifier = Modifier.size(20.dp)) {
+                                    Icon(Icons.Default.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                                 }
                             }
                         }
                     }
+                }
 
-                    // Druckinfos (nur während aktivem Druck)
-                    val isPrinting = uiState.printerState == "printing" || uiState.printerState == "paused"
+                val PrintInfoBlock: @Composable () -> Unit = {
                     uiState.printStats?.let { stats ->
                         if (isPrinting) {
-                            item {
-                                PrintInfoPanel(
-                                    stats = stats,
-                                    currentSpeed = uiState.printSpeedMmPerSec,
-                                    zHeight = uiState.position.z
-                                )
-                            }
+                            PrintInfoPanel(stats = stats, currentSpeed = uiState.printSpeedMmPerSec, zHeight = uiState.position.z)
                         }
                     }
+                }
 
-                    // Temperaturen header with power button (always visible)
-                    item {
-                        SectionHeader(title = "Temperaturen") {
+                val DashboardHeaderBlock: @Composable () -> Unit = {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(text = "Dashboard", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = OnSurface)
                             Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (isPowerOn) AccentYellow.copy(alpha = 0.15f)
-                                        else Color.Transparent
-                                    )
+                                modifier = Modifier.size(32.dp).clip(CircleShape)
+                                    .background(if (isPowerOn) AccentYellow.copy(alpha = 0.15f) else Color.Transparent)
                                     .clickable { showPowerDialog = true },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    Icons.Default.PowerSettingsNew,
-                                    contentDescription = "Drucker-Power",
-                                    tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f),
-                                    modifier = Modifier.size(20.dp)
-                                )
+                                Icon(Icons.Default.PowerSettingsNew, contentDescription = "Drucker-Power",
+                                    tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
                             }
                         }
                     }
+                }
 
-                    // Temperature grid
-                    item {
-                        if (uiState.connectionFailed && uiState.temperatures.isEmpty()) {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color(0xFF1C1C1C)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(16.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.WifiOff,
-                                        contentDescription = null,
-                                        tint = OnSurfaceDim,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                val TempGridBlock: @Composable () -> Unit = {
+                    when {
+                        uiState.connectionFailed && uiState.temperatures.isEmpty() ->
+                            Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = Color(0xFF1C1C1C)) {
+                                Row(modifier = Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.WifiOff, contentDescription = null, tint = OnSurfaceDim, modifier = Modifier.size(20.dp))
                                     Column {
-                                        Text(
-                                            "Keine Verbindung",
-                                            color = OnSurface,
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                        Text(
-                                            "Drucker nicht erreichbar – Einstellungen prüfen",
-                                            color = OnSurfaceDim,
-                                            fontSize = 12.sp
-                                        )
+                                        Text("Keine Verbindung", color = OnSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                        Text("Drucker nicht erreichbar – Einstellungen prüfen", color = OnSurfaceDim, fontSize = 12.sp)
                                     }
                                 }
                             }
-                        } else if (uiState.isLoading && uiState.temperatures.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(160.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator(
-                                    color = AccentYellow,
-                                    modifier = Modifier.size(36.dp)
-                                )
+                        uiState.isLoading && uiState.temperatures.isEmpty() ->
+                            Box(modifier = Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = AccentYellow, modifier = Modifier.size(36.dp))
                             }
-                        } else {
-                            TemperatureGrid(
-                                temps = uiState.temperatures,
-                                enabled = true,
-                                onSetTemp = { setTempTarget = it }
-                            )
+                        else ->
+                            TemperatureGrid(temps = uiState.temperatures, enabled = true, onSetTemp = { setTempTarget = it }, temperatureHistory = uiState.temperatureHistory)
+                    }
+                }
+
+                val WebcamHeaderBlock: @Composable () -> Unit = {
+                    SectionHeader(title = "Webcam") {
+                        Box(modifier = Modifier.size(30.dp).clip(RoundedCornerShape(6.dp)).clickable { showWebcamSettings = true }, contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Settings, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp))
                         }
                     }
+                }
 
-                    // Webcam section header
-                    item {
-                        SectionHeader(title = "Webcam") {
-                            Box(
-                                modifier = Modifier
-                                    .size(30.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable { showWebcamSettings = true },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.Settings,
-                                    contentDescription = null,
-                                    tint = AccentYellow,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                val WebcamCardBlock: @Composable () -> Unit = {
+                    if (isPrinting) TuningBar(tuningData = uiState.tuningData, onOpenTuning = { showTuningDialog = true })
+                    WebcamCard(
+                        host = uiState.config.host, port = uiState.config.port,
+                        webcams = uiState.webcams.ifEmpty { listOf(uiState.webcamConfig) },
+                        apiKey = uiState.config.apiKey, printProgress = uiState.printProgress,
+                        printSpeedMmPerSec = uiState.printSpeedMmPerSec, temperatures = uiState.temperatures,
+                        position = uiState.position, printerState = uiState.printerState,
+                        onPausePrint = { showPauseConfirm = true }, onResumePrint = { viewModel.resumePrint() },
+                        onSaveSnapshot = { viewModel.saveWebcamSnapshot(ctx) }
+                    )
+                }
+
+                val BewegenHeaderBlock: @Composable () -> Unit = {
+                    SectionHeader(title = "Bewegen") {
+                        Box(
+                            modifier = Modifier.alpha(if (isPrinting) 0.4f else 1f)
+                                .clip(RoundedCornerShape(8.dp)).background(Color(0xFF2A2A2A))
+                                .clickable(enabled = !isPrinting) { viewModel.motorsOff() }
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Motor Abschalten", color = OnSurfaceDim, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         }
                     }
+                }
 
-                    // Tuning-Leiste (nur während aktivem Druck)
-                    if (isPrinting) {
-                        item {
-                            TuningBar(
-                                tuningData = uiState.tuningData,
-                                onOpenTuning = { showTuningDialog = true }
-                            )
-                        }
-                    }
+                val BewegenBlock: @Composable () -> Unit = {
+                    BewegungsSection(
+                        position = uiState.position, enabled = !isPrinting,
+                        onJog = { axis, dist -> viewModel.jogMove(axis, dist) },
+                        onHome = { axes -> viewModel.homeAxes(axes) },
+                        pinnedGcodes = uiState.pinnedGcodes, macros = uiState.macros,
+                        favoriteMacros = uiState.favoriteMacros,
+                        onSendGcode = { viewModel.sendGcode(it) },
+                        onMoveToXyz = { x, y, z, feed -> viewModel.moveToXyz(x, y, z, feed) },
+                        onToggleFavorite = { viewModel.toggleMacroFavorite(it) },
+                        routines = uiState.routines,
+                        onRunRoutine = { viewModel.executeRoutine(it) },
+                        onEditRoutine = { onNavigateToRoutineEditor(it) },
+                        onCreateRoutine = { onNavigateToRoutineEditor(null) }
+                    )
+                }
 
-                    // Webcam card
-                    item {
-                        val ctx = LocalContext.current
-                        WebcamCard(
-                            host = uiState.config.host,
-                            port = uiState.config.port,
-                            webcams = uiState.webcams.ifEmpty { listOf(uiState.webcamConfig) },
-                            apiKey = uiState.config.apiKey,
-                            printProgress = uiState.printProgress,
-                            printSpeedMmPerSec = uiState.printSpeedMmPerSec,
-                            temperatures = uiState.temperatures,
-                            position = uiState.position,
-                            printerState = uiState.printerState,
-                            onPausePrint = { showPauseConfirm = true },
-                            onResumePrint = { viewModel.resumePrint() },
-                            onSaveSnapshot = { viewModel.saveWebcamSnapshot(ctx) }
-                        )
-                    }
-
-                    // Bewegungsbereich header
-                    item {
-                        SectionHeader(title = "Bewegen") {
-                            Box(
-                                modifier = Modifier
-                                    .alpha(if (isPrinting) 0.4f else 1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF2A2A2A))
-                                    .clickable(enabled = !isPrinting) { viewModel.motorsOff() }
-                                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    "Motor Abschalten",
-                                    color = OnSurfaceDim,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
-                    }
-
-                    // Bewegungsbereich
-                    item {
-                        BewegungsSection(
-                            position = uiState.position,
-                            enabled = !isPrinting,
-                            onJog = { axis, dist -> viewModel.jogMove(axis, dist) },
-                            onHome = { axes -> viewModel.homeAxes(axes) },
-                            pinnedGcodes = uiState.pinnedGcodes,
-                            macros = uiState.macros,
-                            favoriteMacros = uiState.favoriteMacros,
-                            onSendGcode = { viewModel.sendGcode(it) },
-                            onMoveToXyz = { x, y, z, feed -> viewModel.moveToXyz(x, y, z, feed) },
-                            onToggleFavorite = { viewModel.toggleMacroFavorite(it) }
-                        )
-                    }
-
-                    // Druckdateien
+                val FilesBlock: @Composable () -> Unit = {
                     if (uiState.files.isNotEmpty()) {
-                        item {
-                            SectionHeader(title = "Druckdateien") {
-                                IconButton(
-                                    onClick = { viewModel.loadFiles() },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Refresh,
-                                        contentDescription = "Aktualisieren",
-                                        tint = AccentYellow,
-                                        modifier = Modifier.size(18.dp)
-                                    )
+                        SectionHeader(title = "Druckdateien") {
+                            IconButton(onClick = { viewModel.loadFiles() }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Aktualisieren", tint = AccentYellow, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            uiState.files.forEach { file ->
+                                PrintFileRow(
+                                    file = file, printResult = uiState.printResults[file.filename],
+                                    onPrint = { viewModel.startPrint(file.filename) },
+                                    onViewGCode = { onOpenGCodeViewer(file.filename) }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // ── Layout ───────────────────────────────────────────────────────────
+
+                if (isLandscape) {
+                    Row(
+                        modifier = Modifier.fillMaxSize().background(BackgroundDark).padding(padding)
+                    ) {
+                        // Left: Dashboard + Temperatures + Print stats
+                        Column(
+                            modifier = Modifier
+                                .weight(0.42f)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            ErrorBannerBlock()
+                            PrintInfoBlock()
+                            DashboardHeaderBlock()
+                            TempGridBlock()
+                        }
+                        // Right: Webcam + Movement + Files
+                        Column(
+                            modifier = Modifier
+                                .weight(0.58f)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            WebcamHeaderBlock()
+                            WebcamCardBlock()
+                            BewegenHeaderBlock()
+                            BewegenBlock()
+                            FilesBlock()
+                        }
+                    }
+                } else {
+                    // Portrait: LazyColumn
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize().background(BackgroundDark).padding(padding),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        if (uiState.error != null) item { ErrorBannerBlock() }
+                        if (isPrinting && uiState.printStats != null) item { PrintInfoBlock() }
+                        item { DashboardHeaderBlock() }
+                        item { TempGridBlock() }
+                        item { WebcamHeaderBlock() }
+                        item { WebcamCardBlock() }
+                        item { BewegenHeaderBlock() }
+                        item { BewegenBlock() }
+                        if (uiState.files.isNotEmpty()) {
+                            item {
+                                SectionHeader(title = "Druckdateien") {
+                                    IconButton(onClick = { viewModel.loadFiles() }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Aktualisieren", tint = AccentYellow, modifier = Modifier.size(18.dp))
+                                    }
                                 }
                             }
+                            items(uiState.files, key = { "${it.filename}_${it.modified}" }) { file ->
+                                PrintFileRow(
+                                    file = file, printResult = uiState.printResults[file.filename],
+                                    onPrint = { viewModel.startPrint(file.filename) },
+                                    onViewGCode = { onOpenGCodeViewer(file.filename) }
+                                )
+                            }
                         }
-                        items(uiState.files, key = { "${it.filename}_${it.modified}" }) { file ->
-                            PrintFileRow(
-                                file = file,
-                                printResult = uiState.printResults[file.filename],
-                                onPrint = { viewModel.startPrint(file.filename) },
-                                onViewGCode = { onOpenGCodeViewer(file.filename) }
-                            )
-                        }
+                        item { Spacer(Modifier.height(8.dp)) }
                     }
-
-                    // Bottom spacing
-                    item { Spacer(Modifier.height(8.dp)) }
                 }
             }
         }
@@ -672,10 +637,12 @@ fun SectionHeader(
 fun TemperatureGrid(
     temps: List<TemperatureInfo>,
     enabled: Boolean = true,
-    onSetTemp: (TemperatureInfo) -> Unit
+    onSetTemp: (TemperatureInfo) -> Unit,
+    temperatureHistory: Map<String, List<Pair<Long, Float>>> = emptyMap()
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        temps.chunked(2).forEach { pair ->
+        val chunks = temps.chunked(2)
+        chunks.forEachIndexed { chunkIdx, pair ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 pair.forEach { temp ->
                     TempCard(
@@ -685,7 +652,13 @@ fun TemperatureGrid(
                         onSetTemp = { onSetTemp(temp) }
                     )
                 }
-                if (pair.size == 1) {
+                // Last row with only one card → show temp history graph in 4th slot
+                if (pair.size == 1 && chunkIdx == chunks.lastIndex && temperatureHistory.isNotEmpty()) {
+                    TempHistoryCard(
+                        history = temperatureHistory,
+                        modifier = Modifier.weight(1f)
+                    )
+                } else if (pair.size == 1) {
                     Spacer(modifier = Modifier.weight(1f))
                 }
             }
@@ -789,6 +762,87 @@ fun TempCard(
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 12.sp
                 )
+            }
+        }
+    }
+}
+
+// ── Temperature History Graph ───────────────────────────────────────────────────
+
+@Composable
+fun TempHistoryCard(
+    history: Map<String, List<Pair<Long, Float>>>,
+    modifier: Modifier = Modifier
+) {
+    // Colors per heater name
+    val lineColors = mapOf(
+        "extruder"   to Color(0xFFFF6B00),
+        "heater_bed" to Color(0xFF64B5F6)
+    )
+    val defaultColors = listOf(Color(0xFF81C784), Color(0xFFCE93D8), Color(0xFFFFCC80))
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFF1C1C1C))
+    ) {
+        val filteredHistory = history.filter { it.value.size >= 2 }
+        if (filteredHistory.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    "Verlauf\nwird geladen…",
+                    color = OnSurfaceDim,
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+            return@Box
+        }
+
+        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp)) {
+            Text(
+                "Verlauf",
+                color = OnSurfaceDim,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(4.dp))
+
+            val entries = filteredHistory.entries.sortedBy { it.key }
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                val maxTemp = 280f
+                val now = System.currentTimeMillis()
+                val windowMs = 10L * 60 * 1000  // 10 minutes
+
+                // Draw subtle grid lines at 60°, 120°, 180°, 240°
+                listOf(60f, 120f, 180f, 240f).forEach { temp ->
+                    val y = h - (temp / maxTemp) * h
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.06f),
+                        start = Offset(0f, y),
+                        end = Offset(w, y),
+                        strokeWidth = 1f
+                    )
+                }
+
+                // Draw each heater's temperature line
+                entries.forEachIndexed { idx, (name, points) ->
+                    val color = lineColors[name]
+                        ?: defaultColors.getOrElse(idx) { Color.White.copy(alpha = 0.5f) }
+                    val path = Path()
+                    var moved = false
+                    points.forEach { (timeMs, temp) ->
+                        val xFrac = ((timeMs - (now - windowMs)).toFloat() / windowMs).coerceIn(0f, 1f)
+                        val yFrac = (temp / maxTemp).coerceIn(0f, 1f)
+                        val x = xFrac * w
+                        val y = h - yFrac * h
+                        if (!moved) { path.moveTo(x, y); moved = true }
+                        else path.lineTo(x, y)
+                    }
+                    drawPath(path, color = color, style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round))
+                }
             }
         }
     }
@@ -1131,7 +1185,11 @@ fun BewegungsSection(
     favoriteMacros: List<String> = emptyList(),
     onSendGcode: (String) -> Unit = {},
     onMoveToXyz: (x: Float?, y: Float?, z: Float?, feedrate: Int) -> Unit = { _, _, _, _ -> },
-    onToggleFavorite: (String) -> Unit = {}
+    onToggleFavorite: (String) -> Unit = {},
+    routines: List<RoutineData> = emptyList(),
+    onRunRoutine: (RoutineData) -> Unit = {},
+    onEditRoutine: (String) -> Unit = {},
+    onCreateRoutine: () -> Unit = {}
 ) {
     var stepMm by remember { mutableStateOf(10f) }
     val stepOptions = listOf(0.1f, 1f, 10f, 50f)
@@ -1185,14 +1243,144 @@ fun BewegungsSection(
             onHomeAll = { onHome("") },
             onMoveToXyz = onMoveToXyz
         )
-        // Makros als Pill-Grid (min. 2 nebeneinander, Favoriten oben)
+
+        // ── Routinen sub-section ───────────────────────────────────────────────
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "Routinen",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = OnSurface
+            )
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(AccentYellow.copy(alpha = 0.15f))
+                    .clickable(enabled = routines.size < 4) { onCreateRoutine() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = "Routine erstellen",
+                    tint = if (routines.size < 4) AccentYellow else OnSurfaceDim,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+        if (routines.isEmpty()) {
+            Text(
+                "Keine Routinen – tippe + zum Erstellen (max. 4)",
+                color = OnSurfaceDim,
+                fontSize = 12.sp
+            )
+        } else {
+            RoutineChipsGrid(
+                routines = routines,
+                onRun = onRunRoutine,
+                onEdit = onEditRoutine
+            )
+        }
+
+        // ── Makros als Pill-Grid (min. 2 nebeneinander, Favoriten oben) ────────
         if (allCommands.isNotEmpty()) {
+            Text(
+                "Makros",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = OnSurface
+            )
             MacroPillGrid(
                 commands = allCommands,
                 favorites = favoriteMacros,
                 enabled = enabled,
                 onSend = onSendGcode,
                 onToggleFavorite = onToggleFavorite
+            )
+        }
+    }
+}
+
+// ── Routine chips grid ─────────────────────────────────────────────────────────
+
+@Composable
+fun RoutineChipsGrid(
+    routines: List<RoutineData>,
+    onRun: (RoutineData) -> Unit,
+    onEdit: (String) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        routines.chunked(2).forEach { pair ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                pair.forEach { routine ->
+                    RoutineChip(
+                        routine = routine,
+                        modifier = Modifier.weight(1f),
+                        onRun = { onRun(routine) },
+                        onEdit = { onEdit(routine.id) }
+                    )
+                }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+fun RoutineChip(
+    routine: RoutineData,
+    modifier: Modifier = Modifier,
+    onRun: () -> Unit,
+    onEdit: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    Box(modifier = modifier) {
+        Surface(
+            shape = RoundedCornerShape(50.dp),
+            color = Color(0xFF1A2E1A),
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { onRun() },
+                        onLongPress = { showMenu = true }
+                    )
+                }
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color(0xFF4CAF50),
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    routine.name,
+                    color = Color(0xFF4CAF50),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+            DropdownMenuItem(
+                text = { Text("Bearbeiten", fontSize = 13.sp) },
+                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                onClick = { onEdit(); showMenu = false }
             )
         }
     }

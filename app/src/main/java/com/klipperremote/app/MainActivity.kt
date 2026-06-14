@@ -49,6 +49,7 @@ import com.klipperremote.app.ui.screens.DriverSettingsScreen
 import com.klipperremote.app.ui.screens.HomeScreen
 import com.klipperremote.app.ui.screens.MachineConfigScreen
 import com.klipperremote.app.ui.screens.PrintProgressBar
+import com.klipperremote.app.ui.screens.RoutineEditorScreen
 import com.klipperremote.app.ui.screens.SettingsScreen
 import com.klipperremote.app.ui.screens.SlicerScreen
 import com.klipperremote.app.ui.theme.KlipperRemoteTheme
@@ -118,7 +119,21 @@ class MainActivity : ComponentActivity() {
                                 navController.navigate("gcode_viewer/$encoded")
                             },
                             onNavigateToCrashLog = { navController.navigate("crash_log") },
-                            onNavigateToSlicer = { navController.navigate("slicer") }
+                            onNavigateToSlicer = { navController.navigate("slicer") },
+                            onNavigateToRoutineEditor = { routineId ->
+                                val param = routineId ?: "new"
+                                navController.navigate("routine_editor/$param")
+                            }
+                        )
+                    }
+                    composable(
+                        "routine_editor/{routineId}",
+                        arguments = listOf(navArgument("routineId") { type = NavType.StringType })
+                    ) { backStackEntry ->
+                        val param = backStackEntry.arguments?.getString("routineId") ?: "new"
+                        RoutineEditorScreen(
+                            routineId = if (param == "new") null else param,
+                            onNavigateBack = { navController.popBackStack() }
                         )
                     }
                     composable("slicer") {

@@ -5,6 +5,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.klipperremote.app.data.model.AppConfig
 import com.klipperremote.app.data.model.BackupConfigFile
+import com.klipperremote.app.data.model.BLOCK_DELAY
+import com.klipperremote.app.data.model.BLOCK_GOTO
+import com.klipperremote.app.data.model.BLOCK_HOME
+import com.klipperremote.app.data.model.BLOCK_MACRO
+import com.klipperremote.app.data.model.BLOCK_POWER
+import com.klipperremote.app.data.model.BLOCK_ZTILT
 import com.klipperremote.app.data.model.ConfigFile
 import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
@@ -18,6 +24,7 @@ import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.PrinterProfile
+import com.klipperremote.app.data.model.RoutineData
 import com.klipperremote.app.data.model.TemperatureInfo
 import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
@@ -112,7 +119,12 @@ data class MainUiState(
     val driverSettingsError: String? = null,
     // Druckergebnis je Dateiname: true = erfolgreich, false = abgebrochen/Fehler.
     // Steuert das Symbol neben Vorschau-/Play-Button in der Dateiliste.
-    val printResults: Map<String, Boolean> = emptyMap()
+    val printResults: Map<String, Boolean> = emptyMap(),
+    // Temperaturverlauf der letzten ~10 Min. (max. 120 Punkte pro Heizer).
+    // Key = Heizer-Name, Value = Liste von (timestampMs, temperaturCelsius).
+    val temperatureHistory: Map<String, List<Pair<Long, Float>>> = emptyMap(),
+    // Gespeicherte Routinen (max. 4)
+    val routines: List<RoutineData> = emptyList()
 )
 
 @HiltViewModel
@@ -220,10 +232,57 @@ class MainViewModel @Inject constructor(
                 _uiState.update { it.copy(printResults = results) }
             }
         }
+        // Routinen von Disk laden
+        viewModelScope.launch(Dispatchers.IO) {
+            val loaded = loadRoutinesFromDisk()
+            if (loaded.isNotEmpty()) _uiState.update { it.copy(routines = loaded) }
+        }
         startPolling()
         collectWsSnapshot()
         loadFiles()
         autoDetectWebcamIfNeeded()
+    }
+
+    // ── Routinen ──────────────────────────────────────────────────────────────
+
+    private val gson = com.google.gson.Gson()
+    private val routinesFile get() = java.io.File(appContext.filesDir, "routines.json")
+
+    private fun loadRoutinesFromDisk(): List<RoutineData> = runCatching {
+        gson.fromJson(routinesFile.readText(), Array<RoutineData>::class.java).toList()
+    }.getOrDefault(emptyList())
+
+    private fun saveRoutinesToDisk(routines: List<RoutineData>) {
+        runCatching { routinesFile.writeText(gson.toJson(routines)) }
+    }
+
+    fun saveRoutine(routine: RoutineData) {
+        val current = _uiState.value.routines.toMutableList()
+        val idx = current.indexOfFirst { it.id == routine.id }
+        if (idx >= 0) current[idx] = routine else if (current.size < 4) current.add(routine)
+        _uiState.update { it.copy(routines = current) }
+        viewModelScope.launch(Dispatchers.IO) { saveRoutinesToDisk(current) }
+    }
+
+    fun deleteRoutine(id: String) {
+        val current = _uiState.value.routines.filter { it.id != id }
+        _uiState.update { it.copy(routines = current) }
+        viewModelScope.launch(Dispatchers.IO) { saveRoutinesToDisk(current) }
+    }
+
+    fun executeRoutine(routine: RoutineData) {
+        viewModelScope.launch {
+            routine.blocks.forEach { block ->
+                when (block.type) {
+                    BLOCK_POWER -> block.deviceName?.let { togglePowerDevice(it, block.turnOn) }
+                    BLOCK_DELAY -> delay((block.seconds * 1000L).toLong())
+                    BLOCK_HOME  -> homeAxes(block.axes)
+                    BLOCK_ZTILT -> sendGcode("Z_TILT_ADJUST")
+                    BLOCK_GOTO  -> moveToXyz(block.x, block.y, block.z, block.feedrate)
+                    BLOCK_MACRO -> block.command?.let { sendGcode(it) }
+                }
+            }
+        }
     }
 
     /** true, solange ein Druck läuft oder pausiert ist (Steuerung wird dann gesperrt). */
@@ -372,10 +431,26 @@ class MainViewModel @Inject constructor(
         queue.enqueueHigh { fetchTemperaturesInternal() }
     }
 
+    private fun updateTempHistory(temps: List<TemperatureInfo>) {
+        val now = System.currentTimeMillis()
+        val old = _uiState.value.temperatureHistory
+        val updated = old.toMutableMap()
+        temps.forEach { t ->
+            if (t.name == "extruder" || t.name.startsWith("extruder") || t.name == "heater_bed" || t.name.startsWith("heater_generic")) {
+                val history = (updated[t.name] ?: emptyList()).toMutableList()
+                history.add(Pair(now, t.current))
+                if (history.size > 120) history.subList(0, history.size - 120).clear()
+                updated[t.name] = history
+            }
+        }
+        _uiState.update { it.copy(temperatureHistory = updated) }
+    }
+
     private suspend fun fetchTemperaturesInternal() {
         repository.getTemperatures()
             .onSuccess { temps ->
                 _uiState.update { it.copy(temperatures = temps, isLoading = false) }
+                updateTempHistory(temps)
                 reportConnectionResult(success = true)
             }
             .onFailure {
@@ -405,6 +480,7 @@ class MainViewModel @Inject constructor(
                         tuningData = snap.tuningData
                     )
                 }
+                updateTempHistory(snap.temperatures)
                 reportConnectionResult(success = true)
                 processPrintLifecycle(snap)
             }

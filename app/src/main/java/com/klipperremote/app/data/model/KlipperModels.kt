@@ -260,3 +260,35 @@ data class AxisDriver(
 data class DriverSettings(
     val axes: List<AxisDriver> = emptyList()
 )
+
+// ── Routinen ───────────────────────────────────────────────────────────────────
+
+const val BLOCK_POWER  = "power"
+const val BLOCK_DELAY  = "delay"
+const val BLOCK_HOME   = "home"
+const val BLOCK_ZTILT  = "ztilt"
+const val BLOCK_GOTO   = "goto"
+const val BLOCK_MACRO  = "macro"
+
+/**
+ * Flache Darstellung eines Routine-Bausteins (JSON-serialisierbar via Gson).
+ * Das Feld [type] bestimmt, welche anderen Felder ausgewertet werden.
+ */
+data class RoutineBlockData(
+    val type: String        = BLOCK_DELAY,
+    val deviceName: String? = null,
+    val turnOn: Boolean     = true,
+    val seconds: Float      = 1f,
+    val axes: String        = "XYZ",
+    val x: Float?           = null,
+    val y: Float?           = null,
+    val z: Float?           = null,
+    val feedrate: Int       = 3000,
+    val command: String?    = null
+)
+
+data class RoutineData(
+    val id: String                  = java.util.UUID.randomUUID().toString(),
+    val name: String                = "Routine",
+    val blocks: List<RoutineBlockData> = emptyList()
+)

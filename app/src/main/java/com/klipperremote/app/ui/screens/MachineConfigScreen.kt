@@ -1,5 +1,6 @@
 package com.klipperremote.app.ui.screens
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -126,14 +128,28 @@ fun MachineConfigScreen(
     LaunchedEffect(isEditing) {
         if (!isEditing) { configSearchMode = false; configSearchQuery = "" }
     }
-    val configSearchMatchCount = remember(uiState.editingConfigContent, configSearchQuery) {
-        if (configSearchQuery.isBlank()) 0
+    var configSearchCurrentMatch by remember { mutableStateOf(0) }
+    val configEditorScrollState = rememberScrollState()
+    val configSearchMatchPositions = remember(uiState.editingConfigContent, configSearchQuery) {
+        if (configSearchQuery.isBlank()) emptyList()
         else {
-            var count = 0; var idx = 0
+            val positions = mutableListOf<Int>()
             val lower = uiState.editingConfigContent.lowercase()
             val lowerQ = configSearchQuery.lowercase()
-            while (true) { val f = lower.indexOf(lowerQ, idx); if (f == -1) break; count++; idx = f + lowerQ.length }
-            count
+            var idx = 0
+            while (true) { val f = lower.indexOf(lowerQ, idx); if (f == -1) break; positions.add(f); idx = f + lowerQ.length }
+            positions
+        }
+    }
+    val configSearchMatchCount = configSearchMatchPositions.size
+    val cfgDensity = LocalDensity.current
+    LaunchedEffect(configSearchQuery) { configSearchCurrentMatch = 0 }
+    LaunchedEffect(configSearchCurrentMatch, configSearchMatchPositions) {
+        if (configSearchMatchPositions.isNotEmpty() && configSearchCurrentMatch < configSearchMatchPositions.size) {
+            val charOffset = configSearchMatchPositions[configSearchCurrentMatch]
+            val lineNumber = uiState.editingConfigContent.substring(0, charOffset).count { it == '\n' }
+            val scrollY = (lineNumber * with(cfgDensity) { 20.sp.toPx() }).toInt() - 200
+            configEditorScrollState.animateScrollTo(maxOf(0, scrollY))
         }
     }
 
@@ -380,8 +396,17 @@ fun MachineConfigScreen(
                     ConfigSearchBar(
                         query = configSearchQuery,
                         matchCount = configSearchMatchCount,
+                        currentMatch = configSearchCurrentMatch,
                         onQueryChange = { configSearchQuery = it },
-                        onClose = { configSearchMode = false; configSearchQuery = "" }
+                        onClose = { configSearchMode = false; configSearchQuery = "" },
+                        onPrev = {
+                            if (configSearchMatchCount > 0)
+                                configSearchCurrentMatch = (configSearchCurrentMatch - 1 + configSearchMatchCount) % configSearchMatchCount
+                        },
+                        onNext = {
+                            if (configSearchMatchCount > 0)
+                                configSearchCurrentMatch = (configSearchCurrentMatch + 1) % configSearchMatchCount
+                        }
                     )
                 }
                 ConfigEditor(
@@ -389,6 +414,7 @@ fun MachineConfigScreen(
                     error = uiState.editingConfigError,
                     onContentChange = { viewModel.updateEditingConfigContent(it) },
                     searchQuery = configSearchQuery,
+                    scrollState = configEditorScrollState,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -733,8 +759,11 @@ private fun formatFileSize(bytes: Long): String = when {
 private fun ConfigSearchBar(
     query: String,
     matchCount: Int,
+    currentMatch: Int,
     onQueryChange: (String) -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onPrev: () -> Unit,
+    onNext: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -771,12 +800,37 @@ private fun ConfigSearchBar(
             }
         )
         if (query.isNotEmpty()) {
-            Text(
-                "$matchCount Treffer",
-                color = if (matchCount > 0) Color(0xFFE8FF00) else Color(0xFFEF5350),
-                fontSize = 12.sp,
-                modifier = Modifier.padding(horizontal = 8.dp)
-            )
+            if (matchCount > 0) {
+                Text(
+                    "${currentMatch + 1}/$matchCount",
+                    color = Color(0xFFE8FF00),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+                IconButton(onClick = onPrev, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        Icons.Default.KeyboardArrowUp,
+                        contentDescription = "Vorheriger Treffer",
+                        tint = Color(0xFFAAAAAA),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(onClick = onNext, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Nächster Treffer",
+                        tint = Color(0xFFAAAAAA),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            } else {
+                Text(
+                    "0 Treffer",
+                    color = Color(0xFFEF5350),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+            }
         }
         IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
             Icon(
@@ -797,6 +851,7 @@ private fun ConfigEditor(
     error: String?,
     onContentChange: (String) -> Unit,
     searchQuery: String = "",
+    scrollState: ScrollState = rememberScrollState(),
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxSize().background(Color(0xFF0D0D0D))) {
@@ -819,7 +874,7 @@ private fun ConfigEditor(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scrollState)
             ) {
                 BasicTextField(
                     value = content,
