@@ -127,7 +127,7 @@ fun GcodeFileBrowserDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            if (searchQuery.isNotBlank()) "Keine Treffer für „$searchQuery""
+                            if (searchQuery.isNotBlank()) "Keine Treffer für '$searchQuery'"
                             else "Keine Dateien gefunden",
                             color = OnSurfaceDim,
                             fontSize = 14.sp
