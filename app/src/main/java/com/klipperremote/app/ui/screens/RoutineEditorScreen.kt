@@ -98,14 +98,34 @@ fun RoutineEditorScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    // Load existing routine or start fresh
-    val existing = remember(routineId) {
+    // Load existing routine or start fresh.
+    // routineId ist stabil (kommt aus NavArgs), uiState.routines kann sich verzögert füllen
+    // (Disk-Load läuft async auf IO-Thread → evtl. erst nach erster Komposition fertig).
+    val initialExisting = remember(routineId) {
         routineId?.let { id -> uiState.routines.find { it.id == id } }
     }
-    var routineName by remember { mutableStateOf(existing?.name ?: "Neue Routine") }
+    var routineName by remember { mutableStateOf(initialExisting?.name ?: "Neue Routine") }
     val blocks = remember { mutableStateListOf<RoutineBlockData>().also { list ->
-        existing?.blocks?.let { list.addAll(it) }
+        initialExisting?.blocks?.let { list.addAll(it) }
     }}
+
+    // Falls der Disk-Load erst NACH der ersten Komposition fertig wurde (Race-Condition),
+    // Routine nachladen sobald sie in uiState erscheint.
+    var initialized by remember { mutableStateOf(initialExisting != null || routineId == null) }
+    LaunchedEffect(uiState.routines) {
+        if (!initialized && routineId != null) {
+            val found = uiState.routines.find { it.id == routineId }
+            if (found != null) {
+                routineName = found.name
+                blocks.clear()
+                blocks.addAll(found.blocks)
+                initialized = true
+            }
+        }
+    }
+
+    // existing für Delete-Button und ID-Ermittlung beim Speichern
+    val existing = if (routineId != null) uiState.routines.find { it.id == routineId } else null
 
     // Drag state
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
@@ -232,12 +252,14 @@ fun RoutineEditorScreen(
                                         },
                                         onDrag = { _, dragAmount ->
                                             dragOffsetY += dragAmount.y
-                                            val newIndex = (index + (dragOffsetY / itemHeightPx).roundToInt())
-                                                .coerceIn(0, blocks.size - 1)
-                                            if (newIndex != index && draggingIndex != null) {
-                                                blocks.add(newIndex, blocks.removeAt(index))
-                                                draggingIndex = newIndex
-                                                dragOffsetY -= (newIndex - index) * itemHeightPx
+                                            if (blocks.size > 1) {
+                                                val newIndex = (index + (dragOffsetY / itemHeightPx).roundToInt())
+                                                    .coerceIn(0, blocks.size - 1)
+                                                if (newIndex != index && draggingIndex != null) {
+                                                    blocks.add(newIndex, blocks.removeAt(index))
+                                                    draggingIndex = newIndex
+                                                    dragOffsetY -= (newIndex - index) * itemHeightPx
+                                                }
                                             }
                                         },
                                         onDragEnd = {

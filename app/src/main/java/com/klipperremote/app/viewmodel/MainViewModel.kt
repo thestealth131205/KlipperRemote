@@ -250,11 +250,20 @@ class MainViewModel @Inject constructor(
     private val routinesFile get() = java.io.File(appContext.filesDir, "routines.json")
 
     private fun loadRoutinesFromDisk(): List<RoutineData> = runCatching {
-        gson.fromJson(routinesFile.readText(), Array<RoutineData>::class.java).toList()
+        val json = routinesFile.readText()
+        (gson.fromJson(json, Array<RoutineData>::class.java) ?: emptyArray())
+            .toList()
+            .filter { it.id != null }
     }.getOrDefault(emptyList())
 
     private fun saveRoutinesToDisk(routines: List<RoutineData>) {
-        runCatching { routinesFile.writeText(gson.toJson(routines)) }
+        runCatching {
+            // Atomarer Schreibvorgang: erst temp-Datei, dann umbenennen.
+            // Verhindert Datei-Korruption wenn die App während des Schreibens abstürzt.
+            val tmp = java.io.File(appContext.filesDir, "routines.json.tmp")
+            tmp.writeText(gson.toJson(routines))
+            tmp.renameTo(routinesFile)
+        }
     }
 
     fun saveRoutine(routine: RoutineData) {
