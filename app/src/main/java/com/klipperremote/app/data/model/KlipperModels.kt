@@ -50,7 +50,10 @@ data class AppConfig(
     // Intervall der Power-Geräte-Abfrage (Vordergrund), in Sekunden.
     val powerIntervalSec: Int = 15,
     // Intervall der Benachrichtigungsabfrage, wenn die App im Hintergrund ist, in Sekunden.
-    val notifyIntervalSec: Int = 10
+    val notifyIntervalSec: Int = 10,
+    // Y-Achsen-Bereich des Temperaturverlaufsgraphen in °C.
+    val tempGraphMinCelsius: Int = 10,
+    val tempGraphMaxCelsius: Int = 300
 )
 
 data class KlipperTemperaturesResponse(

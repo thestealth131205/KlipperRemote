@@ -123,7 +123,8 @@ class MainActivity : ComponentActivity() {
                             onNavigateToRoutineEditor = { routineId ->
                                 val param = routineId ?: "new"
                                 navController.navigate("routine_editor/$param")
-                            }
+                            },
+                            viewModel = viewModel
                         )
                     }
                     composable(
@@ -133,23 +134,24 @@ class MainActivity : ComponentActivity() {
                         val param = backStackEntry.arguments?.getString("routineId") ?: "new"
                         RoutineEditorScreen(
                             routineId = if (param == "new") null else param,
-                            onNavigateBack = { navController.popBackStack() }
+                            onNavigateBack = { navController.popBackStack() },
+                            viewModel = viewModel
                         )
                     }
                     composable("slicer") {
                         SlicerScreen(onNavigateBack = { navController.popBackStack() })
                     }
                     composable("settings") {
-                        SettingsScreen(onNavigateBack = { navController.popBackStack() })
+                        SettingsScreen(onNavigateBack = { navController.popBackStack() }, viewModel = viewModel)
                     }
                     composable("crash_log") {
                         CrashLogScreen(onNavigateBack = { navController.popBackStack() })
                     }
                     composable("machine_config") {
-                        MachineConfigScreen(onNavigateBack = { navController.popBackStack() })
+                        MachineConfigScreen(onNavigateBack = { navController.popBackStack() }, viewModel = viewModel)
                     }
                     composable("driver_settings") {
-                        DriverSettingsScreen(onNavigateBack = { navController.popBackStack() })
+                        DriverSettingsScreen(onNavigateBack = { navController.popBackStack() }, viewModel = viewModel)
                     }
                     composable(
                         "gcode_viewer/{filename}",
@@ -159,7 +161,8 @@ class MainActivity : ComponentActivity() {
                         val filename = URLDecoder.decode(encoded, "UTF-8")
                         GCodeViewerScreen(
                             filename = filename,
-                            onNavigateBack = { navController.popBackStack() }
+                            onNavigateBack = { navController.popBackStack() },
+                            viewModel = viewModel
                         )
                     }
                 }

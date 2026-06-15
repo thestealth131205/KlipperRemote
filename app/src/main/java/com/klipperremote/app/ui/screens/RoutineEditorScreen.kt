@@ -7,10 +7,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -272,82 +272,64 @@ fun RoutineEditorScreen(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
             )
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // Power devices
-                items(uiState.powerDevices) { device ->
-                    PaletteChip(
-                        label = "EIN\n${device.name}",
-                        color = Color(0xFF4CAF50),
-                        icon = Icons.Default.PowerSettingsNew
-                    ) {
-                        blocks.add(RoutineBlockData(type = BLOCK_POWER, deviceName = device.name, turnOn = true))
-                    }
-                    Spacer(Modifier.width(4.dp))
-                    PaletteChip(
-                        label = "AUS\n${device.name}",
-                        color = Color(0xFFEF5350),
-                        icon = Icons.Default.PowerSettingsNew
-                    ) {
-                        blocks.add(RoutineBlockData(type = BLOCK_POWER, deviceName = device.name, turnOn = false))
-                    }
+            // Build flat list of chip specs: label / color / icon / onClick
+            data class Chip(val label: String, val color: Color, val icon: ImageVector, val action: () -> Unit)
+            val chips: List<Chip> = buildList {
+                uiState.powerDevices.forEach { d ->
+                    add(Chip("EIN\n${d.name}", Color(0xFF4CAF50), Icons.Default.PowerSettingsNew) {
+                        blocks.add(RoutineBlockData(type = BLOCK_POWER, deviceName = d.name, turnOn = true))
+                    })
+                    add(Chip("AUS\n${d.name}", Color(0xFFEF5350), Icons.Default.PowerSettingsNew) {
+                        blocks.add(RoutineBlockData(type = BLOCK_POWER, deviceName = d.name, turnOn = false))
+                    })
                 }
-
-                // Delay blocks
-                items(listOf(0.5f, 1f, 2f, 4f, 6f, 8f)) { sec ->
-                    PaletteChip(
-                        label = "${if (sec == sec.toInt().toFloat()) sec.toInt().toString() else sec.toString()}s\nWarten",
-                        color = Color(0xFF9E9E9E),
-                        icon = Icons.Default.Timer
-                    ) {
+                listOf(0.5f, 1f, 2f, 4f, 6f, 8f).forEach { sec ->
+                    val lbl = "${if (sec == sec.toInt().toFloat()) sec.toInt().toString() else sec.toString()}s\nWarten"
+                    add(Chip(lbl, Color(0xFF9E9E9E), Icons.Default.Timer) {
                         blocks.add(RoutineBlockData(type = BLOCK_DELAY, seconds = sec))
-                    }
+                    })
                 }
-
-                // Home blocks
-                item {
-                    PaletteChip(
-                        label = "Homen\nXYZ",
-                        color = Color(0xFF42A5F5),
-                        icon = Icons.Default.Home
-                    ) { blocks.add(RoutineBlockData(type = BLOCK_HOME, axes = "XYZ")) }
+                add(Chip("Homen\nXYZ", Color(0xFF42A5F5), Icons.Default.Home) {
+                    blocks.add(RoutineBlockData(type = BLOCK_HOME, axes = "XYZ"))
+                })
+                listOf("X", "Y", "Z").forEach { axis ->
+                    add(Chip("Homen\n$axis", Color(0xFF42A5F5), Icons.Default.Home) {
+                        blocks.add(RoutineBlockData(type = BLOCK_HOME, axes = axis))
+                    })
                 }
-                items(listOf("X", "Y", "Z")) { axis ->
-                    PaletteChip(
-                        label = "Homen\n$axis",
-                        color = Color(0xFF42A5F5),
-                        icon = Icons.Default.Home
-                    ) { blocks.add(RoutineBlockData(type = BLOCK_HOME, axes = axis)) }
-                }
-
-                // Z-Tilt
-                item {
-                    PaletteChip(
-                        label = "Z-Tilt\nAdjust",
-                        color = Color(0xFF7E57C2),
-                        icon = Icons.Default.Straighten
-                    ) { blocks.add(RoutineBlockData(type = BLOCK_ZTILT)) }
-                }
-
-                // GoTo
-                item {
-                    PaletteChip(
-                        label = "Fahre\nnach…",
-                        color = Color(0xFF26C6DA),
-                        icon = Icons.Default.NearMe
-                    ) { showGotoDialog = true }
-                }
-
-                // Macros
-                items(uiState.macros) { macro ->
-                    PaletteChip(
-                        label = macro,
-                        color = Color(0xFFE8FF00),
-                        icon = Icons.Default.Terminal
-                    ) {
+                add(Chip("Z-Tilt\nAdjust", Color(0xFF7E57C2), Icons.Default.Straighten) {
+                    blocks.add(RoutineBlockData(type = BLOCK_ZTILT))
+                })
+                add(Chip("Fahre\nnach…", Color(0xFF26C6DA), Icons.Default.NearMe) { showGotoDialog = true })
+                uiState.macros.forEach { macro ->
+                    add(Chip(macro, Color(0xFFE8FF00), Icons.Default.Terminal) {
                         blocks.add(RoutineBlockData(type = BLOCK_MACRO, command = macro))
+                    })
+                }
+            }
+            // Render as grid of 4 chips per row
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 280.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                chips.chunked(4).forEach { row ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        row.forEach { chip ->
+                            PaletteChip(
+                                label = chip.label,
+                                color = chip.color,
+                                icon = chip.icon,
+                                modifier = Modifier.weight(1f),
+                                onClick = chip.action
+                            )
+                        }
+                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
@@ -520,13 +502,13 @@ private fun PaletteChip(
     label: String,
     color: Color,
     icon: ImageVector,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = Color(0xFF1C1C1C),
-        modifier = Modifier
-            .width(72.dp)
+        modifier = modifier
             .clickable { onClick() }
             .border(1.dp, color.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
     ) {

@@ -391,7 +391,12 @@ fun MachineConfigScreen(
         }
 
         if (isEditing) {
-            Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .imePadding()
+            ) {
                 if (configSearchMode) {
                     ConfigSearchBar(
                         query = configSearchQuery,
@@ -854,7 +859,7 @@ private fun ConfigEditor(
     scrollState: ScrollState = rememberScrollState(),
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier.fillMaxSize().background(Color(0xFF0D0D0D))) {
+    Column(modifier = modifier.fillMaxWidth().background(Color(0xFF0D0D0D))) {
         if (error != null) {
             Text(
                 error,
@@ -867,13 +872,15 @@ private fun ConfigEditor(
             )
         }
         if (content.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Color(0xFFE8FF00))
             }
         } else {
+            // weight(1f) makes the editor fill available space without fighting the IME
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
+                    .weight(1f)
                     .verticalScroll(scrollState)
             ) {
                 BasicTextField(

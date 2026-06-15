@@ -93,6 +93,12 @@ fun SettingsScreen(
     var notifyInterval by remember(appConfig.notifyIntervalSec) {
         mutableStateOf(appConfig.notifyIntervalSec.toString())
     }
+    var tempGraphMin by remember(appConfig.tempGraphMinCelsius) {
+        mutableStateOf(appConfig.tempGraphMinCelsius.toString())
+    }
+    var tempGraphMax by remember(appConfig.tempGraphMaxCelsius) {
+        mutableStateOf(appConfig.tempGraphMaxCelsius.toString())
+    }
     var appConfigSaved by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -291,10 +297,37 @@ fun SettingsScreen(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Number,
-                    imeAction = ImeAction.Done
+                    imeAction = ImeAction.Next
                 ),
                 supportingText = { Text("Hintergrund-Abfrage für Benachrichtigungen (5–600)") }
             )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = tempGraphMin,
+                    onValueChange = { tempGraphMin = it.filter { c -> c.isDigit() } },
+                    label = { Text("Graph Min (°C)") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Next
+                    ),
+                    supportingText = { Text("Untere Y-Achse (0–250)") }
+                )
+                OutlinedTextField(
+                    value = tempGraphMax,
+                    onValueChange = { tempGraphMax = it.filter { c -> c.isDigit() } },
+                    label = { Text("Graph Max (°C)") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    ),
+                    supportingText = { Text("Obere Y-Achse (50–500)") }
+                )
+            }
 
             Button(
                 onClick = {
@@ -304,7 +337,9 @@ fun SettingsScreen(
                             tempIntervalSec = (tempInterval.toIntOrNull() ?: 2).coerceIn(1, 60),
                             backgroundIntervalSec = (bgInterval.toIntOrNull() ?: 4).coerceIn(1, 120),
                             powerIntervalSec = (powerInterval.toIntOrNull() ?: 15).coerceIn(1, 300),
-                            notifyIntervalSec = (notifyInterval.toIntOrNull() ?: 10).coerceIn(5, 600)
+                            notifyIntervalSec = (notifyInterval.toIntOrNull() ?: 10).coerceIn(5, 600),
+                            tempGraphMinCelsius = (tempGraphMin.toIntOrNull() ?: 10).coerceIn(0, 250),
+                            tempGraphMaxCelsius = (tempGraphMax.toIntOrNull() ?: 300).coerceIn(50, 500)
                         )
                     )
                     appConfigSaved = true

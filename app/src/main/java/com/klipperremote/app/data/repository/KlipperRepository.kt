@@ -81,6 +81,8 @@ class KlipperRepository @Inject constructor(
         val KEY_APP_BG_INTERVAL = intPreferencesKey("app_bg_interval_sec")
         val KEY_APP_POWER_INTERVAL = intPreferencesKey("app_power_interval_sec")
         val KEY_APP_NOTIFY_INTERVAL = intPreferencesKey("app_notify_interval_sec")
+        val KEY_APP_TEMP_GRAPH_MIN = intPreferencesKey("app_temp_graph_min")
+        val KEY_APP_TEMP_GRAPH_MAX = intPreferencesKey("app_temp_graph_max")
     }
 
     // Einmalig erkannte dynamische Objektnamen für die gebündelte HTTP-Snapshot-Abfrage.
@@ -158,7 +160,9 @@ class KlipperRepository @Inject constructor(
             tempIntervalSec = (prefs[KEY_APP_TEMP_INTERVAL] ?: 2).coerceIn(1, 60),
             backgroundIntervalSec = (prefs[KEY_APP_BG_INTERVAL] ?: 4).coerceIn(1, 120),
             powerIntervalSec = (prefs[KEY_APP_POWER_INTERVAL] ?: 15).coerceIn(1, 300),
-            notifyIntervalSec = (prefs[KEY_APP_NOTIFY_INTERVAL] ?: 10).coerceIn(5, 600)
+            notifyIntervalSec = (prefs[KEY_APP_NOTIFY_INTERVAL] ?: 10).coerceIn(5, 600),
+            tempGraphMinCelsius = (prefs[KEY_APP_TEMP_GRAPH_MIN] ?: 10).coerceIn(0, 250),
+            tempGraphMaxCelsius = (prefs[KEY_APP_TEMP_GRAPH_MAX] ?: 300).coerceIn(50, 500)
         )
     }
 
@@ -169,6 +173,8 @@ class KlipperRepository @Inject constructor(
             prefs[KEY_APP_BG_INTERVAL] = config.backgroundIntervalSec.coerceIn(1, 120)
             prefs[KEY_APP_POWER_INTERVAL] = config.powerIntervalSec.coerceIn(1, 300)
             prefs[KEY_APP_NOTIFY_INTERVAL] = config.notifyIntervalSec.coerceIn(5, 600)
+            prefs[KEY_APP_TEMP_GRAPH_MIN] = config.tempGraphMinCelsius.coerceIn(0, 250)
+            prefs[KEY_APP_TEMP_GRAPH_MAX] = config.tempGraphMaxCelsius.coerceIn(50, 500)
         }
     }
 

@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -87,9 +88,59 @@ fun HomeScreen(
 
     val powerDevices = uiState.powerDevices
     val isPowerOn = powerDevices.any { it.status == "on" }
+    val isPrinting = uiState.printerState == "printing" || uiState.printerState == "paused"
 
     Scaffold(
         containerColor = BackgroundDark,
+        topBar = {
+            if (uiState.config.host.isNotBlank()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(BackgroundDark)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Dashboard",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = OnSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(if (isPowerOn) AccentYellow.copy(alpha = 0.15f) else Color.Transparent)
+                                .clickable { showPowerDialog = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.PowerSettingsNew,
+                                contentDescription = "Drucker-Power",
+                                tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    if (isPrinting) {
+                        uiState.printStats?.let { stats ->
+                            PrintInfoPanel(
+                                stats = stats,
+                                currentSpeed = uiState.printSpeedMmPerSec,
+                                zHeight = uiState.position.z
+                            )
+                        }
+                    }
+                }
+            }
+        },
         bottomBar = {
             BottomControlBar(
                 printerState = uiState.printerState,
@@ -146,7 +197,6 @@ fun HomeScreen(
             }
             else -> {
                 val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-                val isPrinting = uiState.printerState == "printing" || uiState.printerState == "paused"
                 val ctx = LocalContext.current
 
                 // ── Shared content blocks (composable lambdas) ───────────────────────
@@ -173,31 +223,6 @@ fun HomeScreen(
                     }
                 }
 
-                val PrintInfoBlock: @Composable () -> Unit = {
-                    uiState.printStats?.let { stats ->
-                        if (isPrinting) {
-                            PrintInfoPanel(stats = stats, currentSpeed = uiState.printSpeedMmPerSec, zHeight = uiState.position.z)
-                        }
-                    }
-                }
-
-                val DashboardHeaderBlock: @Composable () -> Unit = {
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(text = "Dashboard", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = OnSurface)
-                            Box(
-                                modifier = Modifier.size(32.dp).clip(CircleShape)
-                                    .background(if (isPowerOn) AccentYellow.copy(alpha = 0.15f) else Color.Transparent)
-                                    .clickable { showPowerDialog = true },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.PowerSettingsNew, contentDescription = "Drucker-Power",
-                                    tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f), modifier = Modifier.size(20.dp))
-                            }
-                        }
-                    }
-                }
-
                 val TempGridBlock: @Composable () -> Unit = {
                     when {
                         uiState.connectionFailed && uiState.temperatures.isEmpty() ->
@@ -215,7 +240,14 @@ fun HomeScreen(
                                 CircularProgressIndicator(color = AccentYellow, modifier = Modifier.size(36.dp))
                             }
                         else ->
-                            TemperatureGrid(temps = uiState.temperatures, enabled = true, onSetTemp = { setTempTarget = it }, temperatureHistory = uiState.temperatureHistory)
+                            TemperatureGrid(
+                                temps = uiState.temperatures,
+                                enabled = true,
+                                onSetTemp = { setTempTarget = it },
+                                temperatureHistory = uiState.temperatureHistory,
+                                tempGraphMinCelsius = uiState.appConfig.tempGraphMinCelsius,
+                                tempGraphMaxCelsius = uiState.appConfig.tempGraphMaxCelsius
+                            )
                     }
                 }
 
@@ -294,36 +326,59 @@ fun HomeScreen(
                 // ── Layout ───────────────────────────────────────────────────────────
 
                 if (isLandscape) {
+                    // Landscape: gesamter Inhalt horizontal scrollbar in einer Row
+                    val screenW = LocalConfiguration.current.screenWidthDp.dp
+                    val colW = maxOf(screenW * 0.88f, 320.dp)
                     Row(
-                        modifier = Modifier.fillMaxSize().background(BackgroundDark).padding(padding)
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(BackgroundDark)
+                            .padding(padding)
+                            .horizontalScroll(rememberScrollState())
                     ) {
-                        // Left: Dashboard + Temperatures + Print stats
+                        // Spalte 1: Dashboard + Temperaturen + Druckstatus
                         Column(
                             modifier = Modifier
-                                .weight(0.42f)
+                                .width(colW)
                                 .fillMaxHeight()
-                                .verticalScroll(rememberScrollState())
                                 .padding(horizontal = 12.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            ErrorBannerBlock()
-                            PrintInfoBlock()
-                            DashboardHeaderBlock()
+                            if (uiState.error != null) ErrorBannerBlock()
                             TempGridBlock()
                         }
-                        // Right: Webcam + Movement + Files
+                        // Spalte 2: Webcam
                         Column(
                             modifier = Modifier
-                                .weight(0.58f)
+                                .width(colW)
                                 .fillMaxHeight()
-                                .verticalScroll(rememberScrollState())
                                 .padding(horizontal = 12.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             WebcamHeaderBlock()
                             WebcamCardBlock()
+                        }
+                        // Spalte 3: Bewegen + Routinen + Makros
+                        Column(
+                            modifier = Modifier
+                                .width(colW)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
                             BewegenHeaderBlock()
                             BewegenBlock()
+                        }
+                        // Spalte 4: Druckdateien
+                        Column(
+                            modifier = Modifier
+                                .width(colW)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
                             FilesBlock()
                         }
                     }
@@ -335,8 +390,6 @@ fun HomeScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         if (uiState.error != null) item { ErrorBannerBlock() }
-                        if (isPrinting && uiState.printStats != null) item { PrintInfoBlock() }
-                        item { DashboardHeaderBlock() }
                         item { TempGridBlock() }
                         item { WebcamHeaderBlock() }
                         item { WebcamCardBlock() }
@@ -638,7 +691,9 @@ fun TemperatureGrid(
     temps: List<TemperatureInfo>,
     enabled: Boolean = true,
     onSetTemp: (TemperatureInfo) -> Unit,
-    temperatureHistory: Map<String, List<Pair<Long, Float>>> = emptyMap()
+    temperatureHistory: Map<String, List<Pair<Long, Float>>> = emptyMap(),
+    tempGraphMinCelsius: Int = 10,
+    tempGraphMaxCelsius: Int = 300
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         val chunks = temps.chunked(2)
@@ -656,6 +711,8 @@ fun TemperatureGrid(
                 if (pair.size == 1 && chunkIdx == chunks.lastIndex && temperatureHistory.isNotEmpty()) {
                     TempHistoryCard(
                         history = temperatureHistory,
+                        minCelsius = tempGraphMinCelsius,
+                        maxCelsius = tempGraphMaxCelsius,
                         modifier = Modifier.weight(1f)
                     )
                 } else if (pair.size == 1) {
@@ -772,6 +829,8 @@ fun TempCard(
 @Composable
 fun TempHistoryCard(
     history: Map<String, List<Pair<Long, Float>>>,
+    minCelsius: Int = 10,
+    maxCelsius: Int = 300,
     modifier: Modifier = Modifier
 ) {
     // Colors per heater name
@@ -799,6 +858,10 @@ fun TempHistoryCard(
             return@Box
         }
 
+        val rangeMin = minCelsius.toFloat()
+        val rangeMax = maxCelsius.toFloat().coerceAtLeast(rangeMin + 10f)
+        val rangeSpan = rangeMax - rangeMin
+
         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp)) {
             Text(
                 "Verlauf",
@@ -812,19 +875,29 @@ fun TempHistoryCard(
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val w = size.width
                 val h = size.height
-                val maxTemp = 280f
                 val now = System.currentTimeMillis()
                 val windowMs = 10L * 60 * 1000  // 10 minutes
 
-                // Draw subtle grid lines at 60°, 120°, 180°, 240°
-                listOf(60f, 120f, 180f, 240f).forEach { temp ->
-                    val y = h - (temp / maxTemp) * h
+                // Draw subtle grid lines at ~25% intervals of the configured range
+                val step = (rangeSpan / 4f).let {
+                    when {
+                        it >= 100f -> 100f
+                        it >= 50f -> 50f
+                        it >= 25f -> 25f
+                        else -> 10f
+                    }
+                }
+                var gridTemp = (rangeMin / step).toInt() * step + step
+                while (gridTemp < rangeMax) {
+                    val yFrac = (gridTemp - rangeMin) / rangeSpan
+                    val y = h - yFrac * h
                     drawLine(
                         color = Color.White.copy(alpha = 0.06f),
                         start = Offset(0f, y),
                         end = Offset(w, y),
                         strokeWidth = 1f
                     )
+                    gridTemp += step
                 }
 
                 // Draw each heater's temperature line
@@ -835,7 +908,7 @@ fun TempHistoryCard(
                     var moved = false
                     points.forEach { (timeMs, temp) ->
                         val xFrac = ((timeMs - (now - windowMs)).toFloat() / windowMs).coerceIn(0f, 1f)
-                        val yFrac = (temp / maxTemp).coerceIn(0f, 1f)
+                        val yFrac = ((temp - rangeMin) / rangeSpan).coerceIn(0f, 1f)
                         val x = xFrac * w
                         val y = h - yFrac * h
                         if (!moved) { path.moveTo(x, y); moved = true }

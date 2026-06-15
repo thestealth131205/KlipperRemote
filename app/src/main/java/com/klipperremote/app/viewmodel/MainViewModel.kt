@@ -38,6 +38,7 @@ import com.klipperremote.app.PrintNotificationHelper
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -274,12 +275,34 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             routine.blocks.forEach { block ->
                 when (block.type) {
-                    BLOCK_POWER -> block.deviceName?.let { togglePowerDevice(it, block.turnOn) }
+                    BLOCK_POWER -> block.deviceName?.let {
+                        withContext(Dispatchers.IO) { repository.togglePowerDevice(it, block.turnOn) }
+                    }
                     BLOCK_DELAY -> delay((block.seconds * 1000L).toLong())
-                    BLOCK_HOME  -> homeAxes(block.axes)
-                    BLOCK_ZTILT -> sendGcode("Z_TILT_ADJUST")
+                    BLOCK_HOME -> {
+                        withContext(Dispatchers.IO) { repository.homeAxes(block.axes) }
+                        // Wait for Klipper to enter "printing" state (moving)
+                        withTimeoutOrNull(5_000L) {
+                            while (_uiState.value.printerState != "printing") { delay(250L) }
+                        }
+                        // Wait until homing completes (leaves "printing")
+                        withTimeoutOrNull(180_000L) {
+                            while (_uiState.value.printerState == "printing") { delay(500L) }
+                        }
+                    }
+                    BLOCK_ZTILT -> {
+                        withContext(Dispatchers.IO) { repository.sendGcode("Z_TILT_ADJUST") }
+                        withTimeoutOrNull(5_000L) {
+                            while (_uiState.value.printerState != "printing") { delay(250L) }
+                        }
+                        withTimeoutOrNull(300_000L) {
+                            while (_uiState.value.printerState == "printing") { delay(500L) }
+                        }
+                    }
                     BLOCK_GOTO  -> moveToXyz(block.x, block.y, block.z, block.feedrate)
-                    BLOCK_MACRO -> block.command?.let { sendGcode(it) }
+                    BLOCK_MACRO -> block.command?.let {
+                        withContext(Dispatchers.IO) { repository.sendGcode(it) }
+                    }
                 }
             }
         }
