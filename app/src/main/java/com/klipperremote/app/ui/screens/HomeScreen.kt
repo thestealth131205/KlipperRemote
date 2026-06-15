@@ -35,6 +35,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
@@ -698,11 +699,14 @@ fun TemperatureGrid(
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         val chunks = temps.chunked(2)
         chunks.forEachIndexed { chunkIdx, pair ->
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                modifier = Modifier.height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 pair.forEach { temp ->
                     TempCard(
                         temp = temp,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
                         enabled = enabled,
                         onSetTemp = { onSetTemp(temp) }
                     )
@@ -713,7 +717,7 @@ fun TemperatureGrid(
                         history = temperatureHistory,
                         minCelsius = tempGraphMinCelsius,
                         maxCelsius = tempGraphMaxCelsius,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                 } else if (pair.size == 1) {
                     Spacer(modifier = Modifier.weight(1f))
@@ -833,88 +837,180 @@ fun TempHistoryCard(
     maxCelsius: Int = 300,
     modifier: Modifier = Modifier
 ) {
-    // Colors per heater name
-    val lineColors = mapOf(
-        "extruder"   to Color(0xFFFF6B00),
-        "heater_bed" to Color(0xFF64B5F6)
+    val rangeMin = minCelsius.toFloat()
+    val rangeMax = maxCelsius.toFloat().coerceAtLeast(rangeMin + 10f)
+    val rangeSpan = rangeMax - rangeMin
+
+    // Feste Farben pro Heizer-Typ; Rest nach Index
+    val baseColors = listOf(
+        Color(0xFFFF6B00),  // extruder – orange
+        Color(0xFF64B5F6),  // heater_bed – blau
+        Color(0xFF81C784),  // 3. – grün
+        Color(0xFFCE93D8),  // 4. – lila
+        Color(0xFFFFCC80),  // 5. – amber
+        Color(0xFF80DEEA),  // 6. – cyan
     )
-    val defaultColors = listOf(Color(0xFF81C784), Color(0xFFCE93D8), Color(0xFFFFCC80))
+
+    // Reihenfolge: extruder* zuerst, heater_bed zweite, Rest alphabetisch
+    val sortedKeys = remember(history) {
+        buildList {
+            addAll(history.keys.filter { it.startsWith("extruder") }.sorted())
+            if (history.containsKey("heater_bed")) add("heater_bed")
+            addAll(history.keys.filter { !it.startsWith("extruder") && it != "heater_bed" }.sorted())
+        }
+    }
+    val colorMap: Map<String, Color> = remember(sortedKeys) {
+        sortedKeys.mapIndexed { i, name ->
+            name to baseColors.getOrElse(i) { Color.White.copy(alpha = 0.5f) }
+        }.toMap()
+    }
+
+    val yStep = when {
+        rangeSpan > 250f -> 50f
+        rangeSpan > 100f -> 25f
+        else -> 10f
+    }
+
+    val hasEnoughData = sortedKeys.any { (history[it]?.size ?: 0) >= 2 }
 
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .background(Color(0xFF1C1C1C))
     ) {
-        val filteredHistory = history.filter { it.value.size >= 2 }
-        if (filteredHistory.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = Alignment.Center) {
-                Text(
-                    "Verlauf\nwird geladen…",
-                    color = OnSurfaceDim,
-                    fontSize = 10.sp,
-                    textAlign = TextAlign.Center
-                )
-            }
-            return@Box
-        }
-
-        val rangeMin = minCelsius.toFloat()
-        val rangeMax = maxCelsius.toFloat().coerceAtLeast(rangeMin + 10f)
-        val rangeSpan = rangeMax - rangeMin
-
-        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp, vertical = 8.dp)
+        ) {
             Text(
                 "Verlauf",
                 color = OnSurfaceDim,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.SemiBold
             )
-            Spacer(Modifier.height(4.dp))
 
-            val entries = filteredHistory.entries.sortedBy { it.key }
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val w = size.width
-                val h = size.height
-                val now = System.currentTimeMillis()
-                val windowMs = 10L * 60 * 1000  // 10 minutes
-
-                // Draw subtle grid lines at ~25% intervals of the configured range
-                val step = (rangeSpan / 4f).let {
-                    when {
-                        it >= 100f -> 100f
-                        it >= 50f -> 50f
-                        it >= 25f -> 25f
-                        else -> 10f
-                    }
-                }
-                var gridTemp = (rangeMin / step).toInt() * step + step
-                while (gridTemp < rangeMax) {
-                    val yFrac = (gridTemp - rangeMin) / rangeSpan
-                    val y = h - yFrac * h
-                    drawLine(
-                        color = Color.White.copy(alpha = 0.06f),
-                        start = Offset(0f, y),
-                        end = Offset(w, y),
-                        strokeWidth = 1f
+            if (!hasEnoughData) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text(
+                        "Verlauf\nwird geladen…",
+                        color = OnSurfaceDim,
+                        fontSize = 10.sp,
+                        textAlign = TextAlign.Center
                     )
-                    gridTemp += step
                 }
+            } else {
+                Spacer(Modifier.height(2.dp))
 
-                // Draw each heater's temperature line
-                entries.forEachIndexed { idx, (name, points) ->
-                    val color = lineColors[name]
-                        ?: defaultColors.getOrElse(idx) { Color.White.copy(alpha = 0.5f) }
-                    val path = Path()
-                    var moved = false
-                    points.forEach { (timeMs, temp) ->
-                        val xFrac = ((timeMs - (now - windowMs)).toFloat() / windowMs).coerceIn(0f, 1f)
-                        val yFrac = ((temp - rangeMin) / rangeSpan).coerceIn(0f, 1f)
-                        val x = xFrac * w
-                        val y = h - yFrac * h
-                        if (!moved) { path.moveTo(x, y); moved = true }
-                        else path.lineTo(x, y)
+                // Legende: Farblinie + Kurzname pro Heizer
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    sortedKeys.forEach { name ->
+                        val color = colorMap[name] ?: Color.White
+                        val shortName = when {
+                            name == "extruder" -> "Extr."
+                            name.startsWith("extruder") -> "E${name.removePrefix("extruder").trim()}"
+                            name == "heater_bed" -> "Bed"
+                            name.startsWith("heater_generic ") -> name.removePrefix("heater_generic ").take(8)
+                            name.startsWith("temperature_sensor ") -> name.removePrefix("temperature_sensor ").take(8)
+                            else -> name.take(8)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Canvas(modifier = Modifier.size(10.dp, 6.dp)) {
+                                drawLine(
+                                    color = color,
+                                    start = Offset(0f, size.height / 2f),
+                                    end = Offset(size.width, size.height / 2f),
+                                    strokeWidth = 1.5.dp.toPx()
+                                )
+                            }
+                            Spacer(Modifier.width(2.dp))
+                            Text(shortName, color = color.copy(alpha = 0.85f), fontSize = 7.sp)
+                        }
                     }
-                    drawPath(path, color = color, style = Stroke(width = 1.5.dp.toPx(), cap = StrokeCap.Round))
+                }
+                Spacer(Modifier.height(3.dp))
+
+                // Graph: Y-Achse links + Zeichenfläche rechts
+                Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    // Y-Achsen-Beschriftung per nativeCanvas
+                    Canvas(modifier = Modifier.width(22.dp).fillMaxHeight()) {
+                        val h = size.height
+                        val paint = android.graphics.Paint().apply {
+                            color = android.graphics.Color.argb(130, 200, 200, 200)
+                            textSize = 7.dp.toPx()
+                            textAlign = android.graphics.Paint.Align.RIGHT
+                            isAntiAlias = true
+                        }
+                        var t = (rangeMin / yStep).toInt() * yStep
+                        while (t <= rangeMax + 0.1f) {
+                            if (t >= rangeMin - 0.1f) {
+                                val yFrac = (t - rangeMin) / rangeSpan
+                                val y = h - yFrac * h
+                                drawContext.canvas.nativeCanvas.drawText(
+                                    "${t.toInt()}",
+                                    size.width - 1.dp.toPx(),
+                                    y + 3.dp.toPx(),
+                                    paint
+                                )
+                            }
+                            t += yStep
+                        }
+                    }
+
+                    Spacer(Modifier.width(3.dp))
+
+                    // Graph-Canvas mit Gitterlinien + Temperaturkurven
+                    Canvas(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                        val w = size.width
+                        val h = size.height
+                        val now = System.currentTimeMillis()
+                        val windowMs = 10L * 60 * 1000  // 10 Minuten
+
+                        // Gitterlinien
+                        var gridT = (rangeMin / yStep).toInt() * yStep
+                        while (gridT <= rangeMax + 0.1f) {
+                            if (gridT >= rangeMin - 0.1f) {
+                                val yFrac = (gridT - rangeMin) / rangeSpan
+                                val y = h - yFrac * h
+                                drawLine(
+                                    color = Color.White.copy(alpha = 0.08f),
+                                    start = Offset(0f, y),
+                                    end = Offset(w, y),
+                                    strokeWidth = 1f
+                                )
+                            }
+                            gridT += yStep
+                        }
+
+                        // Temperaturkurven
+                        sortedKeys.forEach { name ->
+                            val points = history[name]?.filter { it.second >= 0f } ?: return@forEach
+                            if (points.size < 2) return@forEach
+                            val color = colorMap[name] ?: Color.White
+                            val path = Path()
+                            var moved = false
+                            points.forEach { (timeMs, temp) ->
+                                val xFrac = ((timeMs - (now - windowMs)).toFloat() / windowMs).coerceIn(0f, 1f)
+                                val yFrac = ((temp - rangeMin) / rangeSpan).coerceIn(0f, 1f)
+                                val x = xFrac * w
+                                val y = h - yFrac * h
+                                if (!moved) { path.moveTo(x, y); moved = true }
+                                else path.lineTo(x, y)
+                            }
+                            drawPath(
+                                path,
+                                color = color,
+                                style = Stroke(
+                                    width = 2.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }

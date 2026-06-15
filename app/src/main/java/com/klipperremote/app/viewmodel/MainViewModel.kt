@@ -459,12 +459,11 @@ class MainViewModel @Inject constructor(
         val old = _uiState.value.temperatureHistory
         val updated = old.toMutableMap()
         temps.forEach { t ->
-            if (t.name == "extruder" || t.name.startsWith("extruder") || t.name == "heater_bed" || t.name.startsWith("heater_generic")) {
-                val history = (updated[t.name] ?: emptyList()).toMutableList()
-                history.add(Pair(now, t.current))
-                if (history.size > 120) history.subList(0, history.size - 120).clear()
-                updated[t.name] = history
-            }
+            // Alle Heizer und Temperatursensoren tracken (kein Namensfilter)
+            val history = (updated[t.name] ?: emptyList()).toMutableList()
+            history.add(Pair(now, t.current))
+            if (history.size > 120) history.subList(0, history.size - 120).clear()
+            updated[t.name] = history
         }
         _uiState.update { it.copy(temperatureHistory = updated) }
     }
