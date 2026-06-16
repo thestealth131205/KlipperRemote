@@ -17,6 +17,7 @@ import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.PrinterSnapshot
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.Timelapse
 import com.klipperremote.app.data.model.TuningData
 import okhttp3.MultipartBody
 import java.net.URLEncoder
@@ -154,6 +155,20 @@ class KlipperClient(private val config: KlipperConfig) {
             )
         } catch (e: Exception) {
             PrinterStatusInfo("offline")
+        }
+    }
+
+    // Klipper-Host-Status aus /printer/info: "ready" | "startup" | "shutdown" | "error".
+    // Nach dem Einschalten des Druckers braucht Klipper einige Sekunden bis "ready" –
+    // erst dann werden G-Code-Befehle wie G28 oder Z_TILT_ADJUST akzeptiert.
+    suspend fun getKlippyState(): String = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$baseUrl/printer/info").get().build()
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: return@withContext "offline"
+            JSONObject(body).optJSONObject("result")?.optString("state", "offline") ?: "offline"
+        } catch (e: Exception) {
+            "offline"
         }
     }
 
@@ -561,6 +576,82 @@ class KlipperClient(private val config: KlipperConfig) {
         val resp = client.newCall(req).execute()
         if (!resp.isSuccessful) error("HTTP ${resp.code}")
         resp.body?.bytes() ?: error("Leerer Snapshot")
+    }
+
+    // ── Zeitraffer (moonraker-timelapse Plugin) ───────────────────────────────
+    // Fertig gerenderte Videos liegen im virtuellen Root "timelapse". Es wird nur
+    // bei Bedarf (Öffnen des Browsers) genau EINE Listen-Anfrage gestellt – kein
+    // Polling –, um den Klipper-Host zu schonen.
+    suspend fun getTimelapses(): List<Timelapse> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$baseUrl/server/files/list?root=timelapse").get().build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) return@withContext emptyList()
+            val body = resp.body?.string() ?: return@withContext emptyList()
+            val json = JSONObject(body)
+            val result = json.optJSONArray("result") ?: return@withContext emptyList()
+            val items = mutableListOf<Timelapse>()
+            for (i in 0 until result.length()) {
+                val obj = result.optJSONObject(i) ?: continue
+                val path = obj.optString("path", obj.optString("filename", ""))
+                if (path.isBlank()) continue
+                // Nur Video-Dateien anzeigen (Plugin legt auch Frame-Ordner an)
+                val lower = path.lowercase()
+                if (!lower.endsWith(".mp4") && !lower.endsWith(".mkv") &&
+                    !lower.endsWith(".avi") && !lower.endsWith(".mov")) continue
+                items.add(
+                    Timelapse(
+                        path = path,
+                        modified = (obj.optDouble("modified", 0.0) * 1000).toLong(),
+                        size = obj.optLong("size", 0L)
+                    )
+                )
+            }
+            items.sortedByDescending { it.modified }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // Voll-URL eines Zeitraffer-Videos (zum Abspielen/Streamen)
+    fun timelapseUrl(path: String): String {
+        val encoded = URLEncoder.encode(path, "UTF-8").replace("+", "%20")
+        return "$baseUrl/server/files/timelapse/$encoded"
+    }
+
+    // Auth-Header (für den ExoPlayer beim Streamen erforderlich)
+    fun authHeaders(): Map<String, String> {
+        val headers = mutableMapOf<String, String>()
+        if (config.username.isNotBlank() && config.password.isNotBlank()) {
+            headers["Authorization"] = Credentials.basic(config.username, config.password)
+        }
+        if (config.apiKey.isNotBlank()) {
+            headers["X-Api-Key"] = config.apiKey
+        }
+        return headers
+    }
+
+    // Zeitraffer löschen
+    suspend fun deleteTimelapse(path: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val encoded = URLEncoder.encode(path, "UTF-8").replace("+", "%20")
+            val req = Request.Builder()
+                .url("$baseUrl/server/files/timelapse/$encoded")
+                .delete()
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+        }
+    }
+
+    // Zeitraffer streamend herunterladen (kein Laden ins RAM → kein OOM bei großen Videos)
+    suspend fun streamTimelapse(path: String, out: java.io.OutputStream): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder().url(timelapseUrl(path)).get().build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+            resp.body?.byteStream()?.use { input -> input.copyTo(out) } ?: error("Leere Antwort")
+        }
     }
 
     // Konfigurationsdateien auflisten (root=config)

@@ -26,6 +26,7 @@ import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.PrinterProfile
 import com.klipperremote.app.data.model.RoutineData
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.Timelapse
 import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
 import kotlinx.coroutines.Dispatchers
@@ -125,7 +126,14 @@ data class MainUiState(
     // Key = Heizer-Name, Value = Liste von (timestampMs, temperaturCelsius).
     val temperatureHistory: Map<String, List<Pair<Long, Float>>> = emptyMap(),
     // Gespeicherte Routinen (max. 4)
-    val routines: List<RoutineData> = emptyList()
+    val routines: List<RoutineData> = emptyList(),
+    // Zeitraffer-Browser (nur bei Bedarf geladen – kein Polling)
+    val timelapses: List<Timelapse> = emptyList(),
+    val timelapsesLoading: Boolean = false,
+    val timelapseError: String? = null,
+    // Pfad → laufender Download-Status (true = läuft gerade)
+    val timelapseDownloading: Set<String> = emptySet(),
+    val timelapseDownloadResult: String? = null
 )
 
 @HiltViewModel
@@ -240,6 +248,9 @@ class MainViewModel @Inject constructor(
         }
         startPolling()
         collectWsSnapshot()
+        // Direkt beim Start einen vollständigen Snapshot holen, damit ein bereits
+        // laufender Druck sofort (statt erst nach dem ersten Poll-Intervall) erscheint.
+        queue.enqueueHigh { fetchPrinterSnapshotInternal() }
         loadFiles()
         autoDetectWebcamIfNeeded()
     }
@@ -282,30 +293,38 @@ class MainViewModel @Inject constructor(
 
     fun executeRoutine(routine: RoutineData) {
         viewModelScope.launch {
-            routine.blocks.forEach { block ->
+            for (block in routine.blocks) {
                 when (block.type) {
                     BLOCK_POWER -> block.deviceName?.let {
                         withContext(Dispatchers.IO) { repository.togglePowerDevice(it, block.turnOn) }
+                        // Nach dem Einschalten braucht Klipper Zeit, bis der Host wieder
+                        // "ready" meldet – sonst werden folgende G-Code-Befehle abgewiesen.
+                        if (block.turnOn) waitForKlippyReady()
                     }
                     BLOCK_DELAY -> delay((block.seconds * 1000L).toLong())
                     BLOCK_HOME -> {
-                        withContext(Dispatchers.IO) { repository.homeAxes(block.axes) }
-                        // Wait for Klipper to enter "printing" state (moving)
-                        withTimeoutOrNull(5_000L) {
-                            while (_uiState.value.printerState != "printing") { delay(250L) }
+                        if (!waitForKlippyReady()) {
+                            _uiState.update { it.copy(error = "Routine abgebrochen: Drucker nicht bereit (Homing)") }
+                            return@launch
                         }
-                        // Wait until homing completes (leaves "printing")
-                        withTimeoutOrNull(180_000L) {
-                            while (_uiState.value.printerState == "printing") { delay(500L) }
+                        // /printer/gcode/script blockiert bis das Homing abgeschlossen ist.
+                        val res = withContext(Dispatchers.IO) { repository.homeAxes(block.axes) }
+                        if (res.isFailure) {
+                            _uiState.update { it.copy(error = "Homing fehlgeschlagen: ${res.exceptionOrNull()?.message}") }
+                            return@launch
                         }
                     }
                     BLOCK_ZTILT -> {
-                        withContext(Dispatchers.IO) { repository.sendGcode("Z_TILT_ADJUST") }
-                        withTimeoutOrNull(5_000L) {
-                            while (_uiState.value.printerState != "printing") { delay(250L) }
+                        if (!waitForKlippyReady()) {
+                            _uiState.update { it.copy(error = "Routine abgebrochen: Drucker nicht bereit (Z-Tilt)") }
+                            return@launch
                         }
-                        withTimeoutOrNull(300_000L) {
-                            while (_uiState.value.printerState == "printing") { delay(500L) }
+                        // Z_TILT_ADJUST ist der vollständige Klipper-Kalibrierungsbefehl für
+                        // [z_tilt] und benötigt keine Parameter. Blockiert bis fertig.
+                        val res = withContext(Dispatchers.IO) { repository.sendGcode("Z_TILT_ADJUST") }
+                        if (res.isFailure) {
+                            _uiState.update { it.copy(error = "Z-Tilt fehlgeschlagen: ${res.exceptionOrNull()?.message}") }
+                            return@launch
                         }
                     }
                     BLOCK_GOTO  -> moveToXyz(block.x, block.y, block.z, block.feedrate)
@@ -315,6 +334,20 @@ class MainViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Wartet (bis [timeoutMs]), bis Klipper den Host-Status "ready" meldet. Direkt nach
+     * dem Einschalten des Druckers ist Klipper im "startup" und weist G-Code-Befehle ab.
+     * Gibt true zurück, sobald "ready" erreicht ist, sonst false bei Timeout.
+     */
+    private suspend fun waitForKlippyReady(timeoutMs: Long = 60_000L): Boolean {
+        return withTimeoutOrNull(timeoutMs) {
+            while (withContext(Dispatchers.IO) { repository.getKlippyState() } != "ready") {
+                delay(1_000L)
+            }
+            true
+        } ?: false
     }
 
     /** true, solange ein Druck läuft oder pausiert ist (Steuerung wird dann gesperrt). */
@@ -417,7 +450,10 @@ class MainViewModel @Inject constructor(
         val wasInForeground = appInForeground
         appInForeground = inForeground
         if (inForeground && !wasInForeground && !connectionPaused) {
-            fetchTemperatures()
+            // Beim Zurückkehren in den Vordergrund sofort den vollständigen Snapshot
+            // (inkl. Druckerzustand/Fortschritt) holen, damit ein laufender Druck nicht
+            // erst nach dem nächsten Poll-Intervall wieder angezeigt wird.
+            queue.enqueueHigh { fetchPrinterSnapshotInternal() }
         }
     }
 
@@ -523,7 +559,12 @@ class MainViewModel @Inject constructor(
     private suspend fun fetchPrinterStatusInternal() {
         repository.getPrinterStatus()
             .onSuccess { status ->
-                _uiState.update { it.copy(printerState = status.state) }
+                // "offline" entsteht nur bei einem fehlgeschlagenen Abruf und ist kein
+                // echter Druckerzustand. Den bisherigen Status NICHT herabstufen – er
+                // bleibt persistent, bis ein erfolgreicher Abruf das Gegenteil beweist.
+                if (status.state != "offline") {
+                    _uiState.update { it.copy(printerState = status.state) }
+                }
             }
     }
 
@@ -742,6 +783,97 @@ class MainViewModel @Inject constructor(
                 java.io.File(sub, filename).writeBytes(bytes)
             }
         }
+    }
+
+    // ── Zeitraffer-Browser ────────────────────────────────────────────────────
+    // Liste wird ausschließlich auf Nutzer-Anforderung (Öffnen/Aktualisieren)
+    // geladen. Kein Polling → schont den Klipper-Host.
+    fun loadTimelapses() {
+        _uiState.update { it.copy(timelapsesLoading = true, timelapseError = null) }
+        queue.enqueueNormal {
+            repository.getTimelapses()
+                .onSuccess { list ->
+                    _uiState.update { it.copy(timelapses = list, timelapsesLoading = false) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(timelapsesLoading = false, timelapseError = e.message) }
+                }
+        }
+    }
+
+    fun deleteTimelapse(path: String) {
+        queue.enqueueNormal {
+            repository.deleteTimelapse(path)
+                .onSuccess {
+                    _uiState.update { st -> st.copy(timelapses = st.timelapses.filterNot { it.path == path }) }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(timelapseError = "Löschen fehlgeschlagen: ${e.message}") }
+                }
+        }
+    }
+
+    // URL + Auth-Header zum Abspielen im Player. Liefert null, wenn kein Host.
+    suspend fun getTimelapsePlayback(path: String): Pair<String, Map<String, String>>? {
+        return repository.timelapsePlayback(path)
+    }
+
+    fun downloadTimelapse(context: android.content.Context, item: Timelapse) {
+        if (_uiState.value.timelapseDownloading.contains(item.path)) return
+        _uiState.update { it.copy(timelapseDownloading = it.timelapseDownloading + item.path) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val name = item.filename.ifBlank { "timelapse_${System.currentTimeMillis()}.mp4" }
+                    val mime = when {
+                        name.endsWith(".mkv", true) -> "video/x-matroska"
+                        name.endsWith(".avi", true) -> "video/x-msvideo"
+                        name.endsWith(".mov", true) -> "video/quicktime"
+                        else -> "video/mp4"
+                    }
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        val values = android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, name)
+                            put(android.provider.MediaStore.Video.Media.MIME_TYPE, mime)
+                            put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/KlipperRemote")
+                            put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
+                        }
+                        val uri = context.contentResolver.insert(
+                            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values
+                        ) ?: error("Speicherort nicht verfügbar")
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            repository.streamTimelapse(item.path, out).getOrThrow()
+                        } ?: error("Ausgabestrom nicht verfügbar")
+                        values.clear()
+                        values.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
+                        context.contentResolver.update(uri, values, null, null)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        val dir = android.os.Environment.getExternalStoragePublicDirectory(
+                            android.os.Environment.DIRECTORY_MOVIES
+                        )
+                        val sub = java.io.File(dir, "KlipperRemote").apply { mkdirs() }
+                        java.io.File(sub, name).outputStream().use { out ->
+                            repository.streamTimelapse(item.path, out).getOrThrow()
+                        }
+                    }
+                    name
+                }
+            }
+            _uiState.update {
+                it.copy(
+                    timelapseDownloading = it.timelapseDownloading - item.path,
+                    timelapseDownloadResult = result.fold(
+                        onSuccess = { n -> "Gespeichert: $n" },
+                        onFailure = { e -> "Download fehlgeschlagen: ${e.message}" }
+                    )
+                )
+            }
+        }
+    }
+
+    fun clearTimelapseDownloadResult() {
+        _uiState.update { it.copy(timelapseDownloadResult = null) }
     }
 
     fun moveToXyz(x: Float?, y: Float?, z: Float?, feedrate: Int) {

@@ -147,6 +147,15 @@ data class PrintFile(
     val printDuration: Float = 0f
 )
 
+// Ein fertig gerendertes Zeitraffer-Video (moonraker-timelapse Plugin)
+data class Timelapse(
+    val path: String,          // relativer Pfad innerhalb des timelapse-Roots
+    val modified: Long = 0L,
+    val size: Long = 0L
+) {
+    val filename: String get() = path.substringAfterLast('/')
+}
+
 data class KlipperPosition(
     val x: Float? = null,
     val y: Float? = null,

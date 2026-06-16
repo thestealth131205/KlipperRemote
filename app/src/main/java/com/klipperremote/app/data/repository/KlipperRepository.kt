@@ -24,6 +24,7 @@ import com.klipperremote.app.data.model.PrinterProfile
 import com.klipperremote.app.data.model.PrinterSnapshot
 import com.klipperremote.app.data.model.PrinterStatusInfo
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.Timelapse
 import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
 import com.klipperremote.app.data.model.WebcamStreamType
@@ -464,6 +465,12 @@ class KlipperRepository @Inject constructor(
         return KlipperClient(config).homeAxes(axes)
     }
 
+    suspend fun getKlippyState(): String {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return "offline"
+        return KlipperClient(config).getKlippyState()
+    }
+
     suspend fun extrude(amount: Float): Result<Unit> {
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
@@ -486,6 +493,33 @@ class KlipperRepository @Inject constructor(
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
         return KlipperClient(config).startPrint(filename)
+    }
+
+    // ── Zeitraffer ────────────────────────────────────────────────────────────
+    suspend fun getTimelapses(): Result<List<Timelapse>> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return runCatching { KlipperClient(config).getTimelapses() }
+    }
+
+    suspend fun deleteTimelapse(path: String): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).deleteTimelapse(path)
+    }
+
+    suspend fun streamTimelapse(path: String, out: java.io.OutputStream): Result<Unit> {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
+        return KlipperClient(config).streamTimelapse(path, out)
+    }
+
+    // URL + Auth-Header zum direkten Streamen im Player
+    suspend fun timelapsePlayback(path: String): Pair<String, Map<String, String>>? {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return null
+        val client = KlipperClient(config)
+        return client.timelapseUrl(path) to client.authHeaders()
     }
 
     suspend fun getMacros(): Result<List<String>> {

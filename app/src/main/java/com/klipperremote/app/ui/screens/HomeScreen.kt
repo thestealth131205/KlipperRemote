@@ -49,6 +49,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
@@ -60,6 +71,7 @@ import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.PrinterProfile
 import com.klipperremote.app.data.model.RoutineData
 import com.klipperremote.app.data.model.TemperatureInfo
+import com.klipperremote.app.data.model.Timelapse
 import com.klipperremote.app.data.model.TuningData
 import com.klipperremote.app.data.model.WebcamConfig
 import com.klipperremote.app.data.model.WebcamStreamType
@@ -78,6 +90,7 @@ fun HomeScreen(
     viewModel: MainViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val ctx0 = LocalContext.current
     var setTempTarget by remember { mutableStateOf<TemperatureInfo?>(null) }
     var showWebcamSettings by remember { mutableStateOf(false) }
     var showPowerDialog by remember { mutableStateOf(false) }
@@ -86,6 +99,7 @@ fun HomeScreen(
     var showTuningDialog by remember { mutableStateOf(false) }
     var showPauseConfirm by remember { mutableStateOf(false) }
     var showConsole by remember { mutableStateOf(false) }
+    var showTimelapseBrowser by remember { mutableStateOf(false) }
     var showPrinterManager by remember { mutableStateOf(false) }
 
     val powerDevices = uiState.powerDevices
@@ -131,15 +145,6 @@ fun HomeScreen(
                             )
                         }
                     }
-                    if (isPrinting) {
-                        uiState.printStats?.let { stats ->
-                            PrintInfoPanel(
-                                stats = stats,
-                                currentSpeed = uiState.printSpeedMmPerSec,
-                                zHeight = uiState.position.z
-                            )
-                        }
-                    }
                 }
             }
         },
@@ -159,6 +164,7 @@ fun HomeScreen(
                 onCancelPrint = { viewModel.cancelPrint() },
                 onNavigateToCrashLog = onNavigateToCrashLog,
                 onNavigateToSlicer = onNavigateToSlicer,
+                onOpenTimelapse = { viewModel.loadTimelapses(); showTimelapseBrowser = true },
                 onCoolDown = { viewModel.coolDown() },
                 onOpenConsole = { viewModel.loadConsole(); showConsole = true }
             )
@@ -221,6 +227,18 @@ fun HomeScreen(
                                     Icon(Icons.Default.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                                 }
                             }
+                        }
+                    }
+                }
+
+                val PrintInfoBlock: @Composable () -> Unit = {
+                    if (isPrinting) {
+                        uiState.printStats?.let { stats ->
+                            PrintInfoPanel(
+                                stats = stats,
+                                currentSpeed = uiState.printSpeedMmPerSec,
+                                zHeight = uiState.position.z
+                            )
                         }
                     }
                 }
@@ -347,6 +365,7 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             if (uiState.error != null) ErrorBannerBlock()
+                            PrintInfoBlock()
                             TempGridBlock()
                         }
                         // Spalte 2: Webcam
@@ -392,6 +411,7 @@ fun HomeScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         if (uiState.error != null) item { ErrorBannerBlock() }
+                        item { PrintInfoBlock() }
                         item { TempGridBlock() }
                         item { WebcamHeaderBlock() }
                         item { WebcamCardBlock() }
@@ -551,6 +571,27 @@ fun HomeScreen(
             onSetFan      = { name, pct -> viewModel.setGenericFanSpeed(name, pct) },
             onDismiss     = { showTuningDialog = false }
         )
+    }
+
+    // Zeitraffer-Browser
+    if (showTimelapseBrowser) {
+        TimelapseBrowserDialog(
+            timelapses = uiState.timelapses,
+            isLoading = uiState.timelapsesLoading,
+            error = uiState.timelapseError,
+            downloading = uiState.timelapseDownloading,
+            onRefresh = { viewModel.loadTimelapses() },
+            onDownload = { viewModel.downloadTimelapse(ctx0, it) },
+            onDelete = { viewModel.deleteTimelapse(it.path) },
+            getPlayback = { viewModel.getTimelapsePlayback(it.path) },
+            onDismiss = { showTimelapseBrowser = false }
+        )
+    }
+    uiState.timelapseDownloadResult?.let { msg ->
+        LaunchedEffect(msg) {
+            android.widget.Toast.makeText(ctx0, msg, android.widget.Toast.LENGTH_LONG).show()
+            viewModel.clearTimelapseDownloadResult()
+        }
     }
 
     // Konsolen-Dialog
@@ -2264,6 +2305,7 @@ fun BottomControlBar(
     onCancelPrint: () -> Unit = {},
     onNavigateToCrashLog: () -> Unit = {},
     onNavigateToSlicer: () -> Unit = {},
+    onOpenTimelapse: () -> Unit = {},
     onCoolDown: () -> Unit = {},
     onOpenConsole: () -> Unit = {}
 ) {
@@ -2466,6 +2508,11 @@ fun BottomControlBar(
                         leadingIcon = { Icon(Icons.Default.ViewInAr, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
                         onClick = { showMenu = false; onNavigateToSlicer() }
                     )
+                    DropdownMenuItem(
+                        text = { Text("Zeitraffer", color = OnSurface) },
+                        leadingIcon = { Icon(Icons.Default.Movie, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(18.dp)) },
+                        onClick = { showMenu = false; onOpenTimelapse() }
+                    )
                     HorizontalDivider(color = Color(0xFF333333))
                     DropdownMenuItem(
                         text = { Text("Crash Log", color = Color(0xFFFF5555)) },
@@ -2476,6 +2523,240 @@ fun BottomControlBar(
             }
         }
     }
+}
+
+// ── Zeitraffer-Browser ───────────────────────────────────────────────────────
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0) return "0 B"
+    val units = arrayOf("B", "KB", "MB", "GB")
+    var value = bytes.toDouble()
+    var idx = 0
+    while (value >= 1024 && idx < units.lastIndex) { value /= 1024; idx++ }
+    return if (idx == 0) "$bytes B" else "%.1f %s".format(value, units[idx])
+}
+
+@Composable
+fun TimelapseBrowserDialog(
+    timelapses: List<Timelapse>,
+    isLoading: Boolean,
+    error: String?,
+    downloading: Set<String>,
+    onRefresh: () -> Unit,
+    onDownload: (Timelapse) -> Unit,
+    onDelete: (Timelapse) -> Unit,
+    getPlayback: suspend (Timelapse) -> Pair<String, Map<String, String>>?,
+    onDismiss: () -> Unit
+) {
+    var deleteConfirm by remember { mutableStateOf<Timelapse?>(null) }
+    var playItem by remember { mutableStateOf<Timelapse?>(null) }
+    var playback by remember { mutableStateOf<Pair<String, Map<String, String>>?>(null) }
+    val dateFmt = remember { java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault()) }
+
+    // Wiedergabe-Daten (URL + Auth) erst bei Bedarf auflösen
+    LaunchedEffect(playItem) {
+        playback = playItem?.let { getPlayback(it) }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.85f),
+            shape = RoundedCornerShape(16.dp),
+            color = Color(0xFF121212)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFF1E1E1E))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Movie, contentDescription = null, tint = AccentYellow, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Zeitraffer", color = OnSurface, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onRefresh) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Aktualisieren", tint = OnSurface)
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Schließen", tint = OnSurface)
+                    }
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    when {
+                        isLoading && timelapses.isEmpty() ->
+                            CircularProgressIndicator(color = AccentYellow, modifier = Modifier.align(Alignment.Center))
+                        error != null && timelapses.isEmpty() ->
+                            Column(
+                                modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Warning, contentDescription = null, tint = OnSurfaceDim, modifier = Modifier.size(36.dp))
+                                Text("Fehler: $error", color = OnSurfaceDim, fontSize = 13.sp, textAlign = TextAlign.Center)
+                            }
+                        timelapses.isEmpty() ->
+                            Column(
+                                modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Movie, contentDescription = null, tint = OnSurfaceDim, modifier = Modifier.size(40.dp))
+                                Text("Keine Zeitraffer vorhanden", color = OnSurfaceDim, fontSize = 14.sp)
+                                Text("Sie erscheinen hier, sobald das moonraker-timelapse Plugin Videos gerendert hat.",
+                                    color = OnSurfaceDim.copy(alpha = 0.7f), fontSize = 12.sp, textAlign = TextAlign.Center)
+                            }
+                        else ->
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(timelapses, key = { it.path }) { item ->
+                                    val isDownloading = downloading.contains(item.path)
+                                    Surface(shape = RoundedCornerShape(12.dp), color = Color(0xFF1C1C1C), modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(item.filename, color = OnSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Spacer(Modifier.height(2.dp))
+                                                Text(
+                                                    "${dateFmt.format(java.util.Date(item.modified))} · ${formatBytes(item.size)}",
+                                                    color = OnSurfaceDim, fontSize = 11.sp
+                                                )
+                                            }
+                                            IconButton(onClick = { playItem = item }, modifier = Modifier.size(36.dp)) {
+                                                Icon(Icons.Default.PlayArrow, contentDescription = "Abspielen", tint = AccentYellow, modifier = Modifier.size(22.dp))
+                                            }
+                                            if (isDownloading) {
+                                                CircularProgressIndicator(color = AccentYellow, strokeWidth = 2.dp, modifier = Modifier.size(20.dp).padding(2.dp))
+                                                Spacer(Modifier.width(8.dp))
+                                            } else {
+                                                IconButton(onClick = { onDownload(item) }, modifier = Modifier.size(36.dp)) {
+                                                    Icon(Icons.Default.FileDownload, contentDescription = "Herunterladen", tint = OnSurface, modifier = Modifier.size(20.dp))
+                                                }
+                                            }
+                                            IconButton(onClick = { deleteConfirm = item }, modifier = Modifier.size(36.dp)) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Löschen", tint = Color(0xFFFF5555), modifier = Modifier.size(20.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                    }
+                }
+            }
+        }
+    }
+
+    // Lösch-Bestätigung
+    deleteConfirm?.let { item ->
+        AlertDialog(
+            onDismissRequest = { deleteConfirm = null },
+            containerColor = Color(0xFF1E1E1E),
+            icon = { Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFFF5555)) },
+            title = { Text("Zeitraffer löschen?", color = OnSurface, fontWeight = FontWeight.Bold) },
+            text = { Text("\"${item.filename}\" wird unwiderruflich vom Drucker gelöscht.", color = OnSurfaceDim) },
+            confirmButton = {
+                Button(
+                    onClick = { onDelete(item); deleteConfirm = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5555))
+                ) { Text("Löschen", color = Color.White, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteConfirm = null }) { Text("Abbrechen", color = OnSurfaceDim) }
+            }
+        )
+    }
+
+    // Wiedergabe-Overlay
+    playItem?.let { item ->
+        Dialog(
+            onDismissRequest = { playItem = null; playback = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(0.97f).fillMaxHeight(0.7f),
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Black
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().background(Color(0xFF1E1E1E))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(item.filename, color = OnSurface, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        IconButton(onClick = { playItem = null; playback = null }) {
+                            Icon(Icons.Default.Close, contentDescription = "Schließen", tint = OnSurface)
+                        }
+                    }
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        val pb = playback
+                        if (pb == null) {
+                            CircularProgressIndicator(color = AccentYellow)
+                        } else {
+                            TimelapseVideoPlayer(url = pb.first, headers = pb.second, modifier = Modifier.fillMaxSize())
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(UnstableApi::class)
+@Composable
+private fun TimelapseVideoPlayer(
+    url: String,
+    headers: Map<String, String>,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    val exoPlayer = remember(url) {
+        val httpFactory = DefaultHttpDataSource.Factory().apply {
+            if (headers.isNotEmpty()) setDefaultRequestProperties(headers)
+        }
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
+            .build().apply {
+                setMediaItem(MediaItem.fromUri(url))
+                prepare()
+                playWhenReady = true
+            }
+    }
+
+    DisposableEffect(exoPlayer, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP, Lifecycle.Event.ON_PAUSE -> exoPlayer.pause()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            exoPlayer.release()
+        }
+    }
+
+    AndroidView(
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                player = exoPlayer
+                useController = true
+                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                setShutterBackgroundColor(android.graphics.Color.BLACK)
+            }
+        },
+        modifier = modifier
+    )
 }
 
 // ── Konsolen-Dialog ─────────────────────────────────────────────────────────────

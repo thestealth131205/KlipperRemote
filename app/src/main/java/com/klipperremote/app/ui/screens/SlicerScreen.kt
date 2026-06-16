@@ -1424,24 +1424,32 @@ private fun buildSupportCollider(
 }
 
 /**
+ * Routet eine Säule von (sx,sy,startZ) zum Druckbett und weicht Hindernissen
+ * darunter seitlich aus. Wird von Einzel-Spitzen UND gemeinsamen Cluster-Stämmen genutzt.
+ */
+private fun routeColumnToBed(sx: Float, sy: Float, startZ: Float, collider: SupportCollider?, p: SupportProfile): List<Vec3> {
+    val start = Vec3(sx, sy, startZ)
+    val straight = listOf(start, Vec3(sx, sy, 0f))
+    // Zu kurz oder kein Gitter → keine Ausweich-Berechnung nötig
+    if (collider == null || startZ <= 2f * p.xyGap) return straight
+    // Hindernis unterhalb suchen
+    val blockZ = collider.firstBlockBelow(sx, sy, startZ) ?: return straight   // freie Bahn → gerade
+    if (blockZ >= startZ - p.xyGap) return straight   // Hindernis direkt an der Aufhängung → gerade
+    // Freie vertikale Säule neben dem Hindernis suchen
+    val (cx, cy) = collider.findClearColumnXY(sx, sy, blockZ) ?: return straight   // Fallback gerade
+    // Biegepunkt knapp über dem Hindernis + diagonaler Übergang auf halber Höhe
+    val bendZ = (blockZ + p.xyGap * 2f).coerceIn(0f, startZ - p.xyGap)
+    val midZ = (blockZ * 0.5f).coerceAtLeast(collider.zCell)
+    return listOf(start, Vec3(sx, sy, bendZ), Vec3(cx, cy, midZ), Vec3(cx, cy, 0f))
+}
+
+/**
  * Berechnet den optimalen Stützen-Weg von der Spitze zum Druckbett.
  * Erkennt Hindernisse unterhalb und biegt den Weg seitlich darum herum.
  */
 private fun routeSupportPath(tip: Vec3, collider: SupportCollider?, p: SupportProfile): List<Vec3> {
     val anchorZ = (tip.z - p.xyGap).coerceAtLeast(0f)
-    val anchor = Vec3(tip.x, tip.y, anchorZ)
-    if (collider == null || anchorZ <= 0f) return listOf(anchor, Vec3(tip.x, tip.y, 0f))
-    // Hindernis unterhalb der Spitzenaufhängung suchen
-    val blockZ = collider.firstBlockBelow(tip.x, tip.y, anchorZ)
-        ?: return listOf(anchor, Vec3(tip.x, tip.y, 0f))   // freie Bahn → gerade
-    // Biegepunkt: knapp über dem Hindernis
-    val bendZ = (blockZ + p.xyGap * 2f).coerceIn(0f, anchorZ - p.xyGap)
-    // Freie vertikale Säule neben dem Hindernis suchen
-    val (cx, cy) = collider.findClearColumnXY(tip.x, tip.y, blockZ)
-        ?: return listOf(anchor, Vec3(tip.x, tip.y, 0f))   // Fallback gerade
-    // Diagonaler Übergangspunkt auf halber Hindernishöhe
-    val midZ = (blockZ * 0.5f).coerceAtLeast(collider.zCell)
-    return listOf(anchor, Vec3(tip.x, tip.y, bendZ), Vec3(cx, cy, midZ), Vec3(cx, cy, 0f))
+    return routeColumnToBed(tip.x, tip.y, anchorZ, collider, p)
 }
 
 /** Glättet Eckpunkte einer Wegpunkt-Liste zu sanften quadratischen Bezier-Bögen. */
@@ -1507,13 +1515,15 @@ private fun buildTreeSupports(tips: List<Vec3>, collider: SupportCollider?, p: S
             val path = routeSupportPath(cl[0], collider, p)
             segs.addAll(pathToTreeSegs(smoothSupportPath(path, 5f), branchR, tipR))
         } else {
-            // Mehrere Spitzen: gemeinsamer Stamm bis zur Gabelhöhe (gerade)
+            // Mehrere Spitzen: gemeinsamer Stamm bis zur Gabelhöhe.
+            // Stamm weicht – wie Einzelstützen – darunterliegenden Modellteilen aus.
             val cx = cl.map { it.x }.average().toFloat()
             val cy = cl.map { it.y }.average().toFloat()
             val forkZ = (cl.minOf { it.z } * 0.4f).coerceAtLeast(0.5f)
             val fork = Vec3(cx, cy, forkZ)
             val midR = (branchR * 0.7f).coerceAtLeast(tipR)
-            segs.add(TreeSeg(Vec3(cx, cy, 0f), branchR, fork, midR))
+            val trunkPath = smoothSupportPath(routeColumnToBed(cx, cy, forkZ, collider, p), 5f)
+            segs.addAll(pathToTreeSegs(trunkPath, branchR, midR))
             for (tip in cl) {
                 val top = Vec3(tip.x, tip.y, (tip.z - p.xyGap).coerceAtLeast(forkZ))
                 segs.add(TreeSeg(fork, midR, top, tipR))
