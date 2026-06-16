@@ -22,7 +22,7 @@ object PrintNotificationHelper {
     private const val CHANNEL_ID = "print_status"
     private const val NOTIFICATION_ID = 4711
     private const val RESULT_NOTIFICATION_ID = 4712
-    private const val ACCENT_COLOR = 0xFFFF6D00.toInt() // KlipperOrange
+    private const val ACCENT_COLOR = 0xFFFFFF00.toInt() // Neon-Gelb (AccentYellow)
     private const val SUCCESS_COLOR = 0xFF4CAF50.toInt() // Grün
     private const val ERROR_COLOR = 0xFFE53935.toInt()   // Rot
 
