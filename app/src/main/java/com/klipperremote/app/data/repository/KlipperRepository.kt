@@ -702,6 +702,14 @@ class KlipperRepository @Inject constructor(
         return runCatching { KlipperClient(config).downloadSnapshot(snapshotUrl) }
     }
 
+    /** Löst die Snapshot-URL der ersten Webcam des aktiven Druckers auf. Null wenn keine URL konfiguriert. */
+    suspend fun getWebcamSnapshotUrl(): String? {
+        val config = configFlow.first()
+        if (config.host.isBlank()) return null
+        val webcam = webcamConfigFlow.first()
+        return webcam.resolveSnapshotUrl(config.host, config.port, config.apiKey).ifBlank { null }
+    }
+
     // Power-Gerät-Cache: Format "name:status|name:status"
     suspend fun saveCachedPowerDevices(devices: List<PowerDevice>) {
         val encoded = devices.joinToString("|") { "${it.name}:${it.status}" }

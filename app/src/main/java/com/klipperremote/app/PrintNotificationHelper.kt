@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -61,7 +62,8 @@ object PrintNotificationHelper {
         context: Context,
         filename: String,
         progress: Float,
-        etaText: String?
+        etaText: String?,
+        largeIconBitmap: Bitmap? = null
     ) {
         if (!hasPermission(context)) return
         ensureChannel(context)
@@ -83,6 +85,7 @@ object PrintNotificationHelper {
 
         val notification: Notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setLargeIcon(largeIconBitmap)
             .setContentTitle(title)
             .setContentText(name)
             .setStyle(NotificationCompat.BigTextStyle()

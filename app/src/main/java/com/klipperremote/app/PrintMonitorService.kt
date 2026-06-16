@@ -4,6 +4,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
 import com.klipperremote.app.data.repository.KlipperRepository
@@ -70,6 +71,9 @@ class PrintMonitorService : Service() {
             repository.appConfigFlow.first().notifyIntervalSec
         }.getOrDefault(10).coerceAtLeast(5) * 1000L
 
+        val snapshotIntervalMs = 5 * 60 * 1000L // Webcam-Snapshot frühestens alle 5 Minuten
+        var lastSnapshotFetchMs = 0L
+
         while (scope.isActive) {
             val snap = runCatching { repository.getPrinterSnapshot() }.getOrNull()?.getOrNull()
             if (snap != null) {
@@ -85,6 +89,22 @@ class PrintMonitorService : Service() {
                 if (!printing) {
                     stopSelf()
                     break
+                }
+
+                // Webcam-Snapshot für die Benachrichtigung, frühestens alle 5 Minuten
+                val nowMs = System.currentTimeMillis()
+                if (nowMs - lastSnapshotFetchMs >= snapshotIntervalMs) {
+                    runCatching {
+                        val snapshotUrl = repository.getWebcamSnapshotUrl()
+                        if (!snapshotUrl.isNullOrBlank()) {
+                            val bytes = repository.downloadSnapshot(snapshotUrl).getOrNull()
+                            if (bytes != null) {
+                                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                PrintMonitor.updateSnapshot(bitmap)
+                                lastSnapshotFetchMs = nowMs
+                            }
+                        }
+                    }
                 }
             }
             delay(intervalMs)

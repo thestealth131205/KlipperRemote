@@ -1,6 +1,7 @@
 package com.klipperremote.app
 
 import android.content.Context
+import android.graphics.Bitmap
 import com.klipperremote.app.data.model.PrinterSnapshot
 
 /**
@@ -18,6 +19,13 @@ object PrintMonitor {
 
     private var lastPrintingActive = false
     private var trackedFilename = ""
+
+    @Volatile private var cachedSnapshotBitmap: Bitmap? = null
+
+    /** Aktualisiert das gecachte Webcam-Snapshot-Bild für die Benachrichtigung. */
+    fun updateSnapshot(bitmap: Bitmap?) {
+        cachedSnapshotBitmap = bitmap
+    }
 
     private var minFlow = Float.MAX_VALUE
     private var maxFlow = 0f
@@ -42,7 +50,7 @@ object PrintMonitor {
             if (filename.isNotBlank()) trackedFilename = filename
             accumulate(snap)
             val progress = snap.printStats?.progress ?: snap.printProgress ?: 0f
-            PrintNotificationHelper.showPrintProgress(context, filename, progress, etaText(snap))
+            PrintNotificationHelper.showPrintProgress(context, filename, progress, etaText(snap), cachedSnapshotBitmap)
             lastPrintingActive = true
             return null
         }
