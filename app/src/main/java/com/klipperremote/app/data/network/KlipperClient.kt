@@ -651,6 +651,7 @@ class KlipperClient(private val config: KlipperConfig) {
             val resp = client.newCall(req).execute()
             if (!resp.isSuccessful) error("HTTP ${resp.code}")
             resp.body?.byteStream()?.use { input -> input.copyTo(out) } ?: error("Leere Antwort")
+            Unit
         }
     }
 
