@@ -283,8 +283,11 @@ fun HomeScreen(
                     }
                 }
 
-                val WebcamCardBlock: @Composable () -> Unit = {
+                val TuningContentBlock: @Composable () -> Unit = {
                     if (isPrinting) TuningBar(tuningData = uiState.tuningData, onOpenTuning = { showTuningDialog = true })
+                }
+
+                val WebcamOnlyBlock: @Composable () -> Unit = {
                     WebcamCard(
                         host = uiState.config.host, port = uiState.config.port,
                         webcams = uiState.webcams.ifEmpty { listOf(uiState.webcamConfig) },
@@ -294,6 +297,11 @@ fun HomeScreen(
                         onPausePrint = { showPauseConfirm = true }, onResumePrint = { viewModel.resumePrint() },
                         onSaveSnapshot = { viewModel.saveWebcamSnapshot(ctx) }
                     )
+                }
+
+                val WebcamCardBlock: @Composable () -> Unit = {
+                    TuningContentBlock()
+                    WebcamOnlyBlock()
                 }
 
                 val BewegenHeaderBlock: @Composable () -> Unit = {
@@ -392,7 +400,34 @@ fun HomeScreen(
                                 TempGridBlock()
                             }
                         }
-                        // Spalte 2: Webcam
+                        // Spalte 2: Tuning (nur bei aktivem Druck)
+                        if (isPrinting) {
+                            Row(modifier = Modifier.width(colW).fillMaxHeight()) {
+                                LandscapeLabel(title = "Tuning") {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(26.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable { showTuningDialog = true },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Default.Settings, contentDescription = "Tuning öffnen", tint = AccentYellow, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                                Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    TuningBar(tuningData = uiState.tuningData, onOpenTuning = { showTuningDialog = true })
+                                }
+                            }
+                        }
+                        // Spalte 3: Webcam
                         Row(modifier = Modifier.width(colW).fillMaxHeight()) {
                             LandscapeLabel(title = "Webcam") {
                                 Box(
@@ -414,10 +449,10 @@ fun HomeScreen(
                                     .padding(horizontal = 10.dp, vertical = 8.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                WebcamCardBlock()
+                                WebcamOnlyBlock()
                             }
                         }
-                        // Spalte 3: Bewegen
+                        // Spalte 4: Bewegen
                         Row(modifier = Modifier.width(colW).fillMaxHeight()) {
                             LandscapeLabel(title = "Bewegen") {
                                 Box(
@@ -444,7 +479,7 @@ fun HomeScreen(
                                 BewegenBlock()
                             }
                         }
-                        // Spalte 4: Druckdateien
+                        // Spalte 5: Druckdateien
                         Row(modifier = Modifier.width(colW).fillMaxHeight()) {
                             LandscapeLabel(title = "Dateien") {
                                 IconButton(onClick = { viewModel.loadFiles() }, modifier = Modifier.size(26.dp)) {
