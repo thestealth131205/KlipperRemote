@@ -711,7 +711,9 @@ fun HomeScreen(
                 showGcodeFileBrowser = false
                 onOpenGCodeViewer(filename)
             },
-            onDismiss = { showGcodeFileBrowser = false }
+            onDismiss = { showGcodeFileBrowser = false },
+            thumbnails = uiState.fileThumbnails,
+            onRequestThumbnail = { viewModel.loadFileThumbnail(it) }
         )
     }
 

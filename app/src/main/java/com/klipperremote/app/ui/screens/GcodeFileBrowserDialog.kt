@@ -39,7 +39,9 @@ fun GcodeFileBrowserDialog(
     files: List<PrintFile>,
     onSelectFile: (String) -> Unit,
     onPreviewFile: (String) -> Unit = {},
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    thumbnails: Map<String, Bitmap> = emptyMap(),
+    onRequestThumbnail: (String) -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     val filteredFiles = remember(files, searchQuery) {
@@ -144,6 +146,8 @@ fun GcodeFileBrowserDialog(
                         items(filteredFiles, key = { "${it.filename}_${it.modified}" }) { file ->
                             GcodeFileItem(
                                 file = file,
+                                thumbnail = thumbnails[file.filename],
+                                onRequestThumbnail = { onRequestThumbnail(file.filename) },
                                 onClick = { onSelectFile(file.filename) },
                                 onPreview = { onPreviewFile(file.filename) }
                             )
@@ -156,7 +160,17 @@ fun GcodeFileBrowserDialog(
 }
 
 @Composable
-private fun GcodeFileItem(file: PrintFile, onClick: () -> Unit, onPreview: () -> Unit = {}) {
+private fun GcodeFileItem(
+    file: PrintFile,
+    thumbnail: Bitmap? = null,
+    onRequestThumbnail: () -> Unit = {},
+    onClick: () -> Unit,
+    onPreview: () -> Unit = {}
+) {
+    LaunchedEffect(file.filename) {
+        if (thumbnail == null) onRequestThumbnail()
+    }
+
     val sizeText = when {
         file.size >= 1_048_576 -> "%.1f MB".format(file.size / 1_048_576f)
         file.size >= 1_024 -> "%.0f KB".format(file.size / 1_024f)
@@ -175,12 +189,32 @@ private fun GcodeFileItem(file: PrintFile, onClick: () -> Unit, onPreview: () ->
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            Icons.Default.Description,
-            contentDescription = null,
-            tint = AccentYellow.copy(alpha = 0.7f),
-            modifier = Modifier.size(20.dp)
-        )
+        if (thumbnail != null) {
+            Image(
+                bitmap = thumbnail.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF111111))
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF1A1A1A)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Description,
+                    contentDescription = null,
+                    tint = AccentYellow.copy(alpha = 0.5f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(

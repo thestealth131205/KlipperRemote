@@ -133,7 +133,9 @@ data class MainUiState(
     val timelapseError: String? = null,
     // Pfad → laufender Download-Status (true = läuft gerade)
     val timelapseDownloading: Set<String> = emptySet(),
-    val timelapseDownloadResult: String? = null
+    val timelapseDownloadResult: String? = null,
+    // Vorschaubilder für Datei-Browser (Dateiname → Bitmap, lazy geladen)
+    val fileThumbnails: Map<String, Bitmap> = emptyMap()
 )
 
 @HiltViewModel
@@ -1054,6 +1056,18 @@ class MainViewModel @Inject constructor(
 
     fun clearGcodePreview() {
         _uiState.update { it.copy(gcodePreviewMetadata = null, gcodePreviewThumbnail = null, gcodePreviewLoading = false) }
+    }
+
+    fun loadFileThumbnail(filename: String) {
+        if (_uiState.value.fileThumbnails.containsKey(filename)) return
+        queue.enqueueNormal {
+            repository.getGcodeMetadata(filename)
+                .onSuccess { meta ->
+                    val url = meta.thumbnailUrl ?: return@onSuccess
+                    val bmp = repository.fetchThumbnail(url) ?: return@onSuccess
+                    _uiState.update { it.copy(fileThumbnails = it.fileThumbnails + (filename to bmp)) }
+                }
+        }
     }
 
     fun loadGCodeViewer(filename: String) {
