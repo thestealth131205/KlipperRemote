@@ -347,10 +347,25 @@ fun HomeScreen(
                     }
                 }
 
+                // Dateien-Inhalt ohne Header (für Landscape-Label-Layout)
+                val FilesContentBlock: @Composable () -> Unit = {
+                    if (uiState.files.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            uiState.files.forEach { file ->
+                                PrintFileRow(
+                                    file = file, printResult = uiState.printResults[file.filename],
+                                    onPrint = { viewModel.startPrint(file.filename) },
+                                    onViewGCode = { onOpenGCodeViewer(file.filename) }
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // ── Layout ───────────────────────────────────────────────────────────
 
                 if (isLandscape) {
-                    // Landscape: gesamter Inhalt horizontal scrollbar in einer Row
+                    // Landscape: vertikale Abschnitts-Labels links, Inhalt scrollbar rechts
                     val screenW = LocalConfiguration.current.screenWidthDp.dp
                     val colW = maxOf(screenW * 0.88f, 320.dp)
                     Row(
@@ -360,53 +375,93 @@ fun HomeScreen(
                             .padding(padding)
                             .horizontalScroll(rememberScrollState())
                     ) {
-                        // Spalte 1: Dashboard + Temperaturen + Druckstatus
-                        Column(
-                            modifier = Modifier
-                                .width(colW)
-                                .fillMaxHeight()
-                                .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            if (uiState.error != null) ErrorBannerBlock()
-                            PrintInfoBlock()
-                            TempGridBlock()
+                        // Spalte 1: Status / Temperaturen
+                        Row(modifier = Modifier.width(colW).fillMaxHeight()) {
+                            LandscapeLabel(title = "Status")
+                            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                if (uiState.error != null) ErrorBannerBlock()
+                                PrintInfoBlock()
+                                TempGridBlock()
+                            }
                         }
                         // Spalte 2: Webcam
-                        Column(
-                            modifier = Modifier
-                                .width(colW)
-                                .fillMaxHeight()
-                                .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            WebcamHeaderBlock()
-                            WebcamCardBlock()
+                        Row(modifier = Modifier.width(colW).fillMaxHeight()) {
+                            LandscapeLabel(title = "Webcam") {
+                                Box(
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable { showWebcamSettings = true },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Settings, contentDescription = "Webcam Einstellungen", tint = AccentYellow, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                WebcamCardBlock()
+                            }
                         }
-                        // Spalte 3: Bewegen + Routinen + Makros
-                        Column(
-                            modifier = Modifier
-                                .width(colW)
-                                .fillMaxHeight()
-                                .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            BewegenHeaderBlock()
-                            BewegenBlock()
+                        // Spalte 3: Bewegen
+                        Row(modifier = Modifier.width(colW).fillMaxHeight()) {
+                            LandscapeLabel(title = "Bewegen") {
+                                Box(
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .alpha(if (isPrinting) 0.4f else 1f)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFF2A2A2A))
+                                        .clickable(enabled = !isPrinting) { viewModel.motorsOff() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Stop, contentDescription = "Motor Abschalten", tint = OnSurfaceDim, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                BewegenBlock()
+                            }
                         }
                         // Spalte 4: Druckdateien
-                        Column(
-                            modifier = Modifier
-                                .width(colW)
-                                .fillMaxHeight()
-                                .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            FilesBlock()
+                        Row(modifier = Modifier.width(colW).fillMaxHeight()) {
+                            LandscapeLabel(title = "Dateien") {
+                                IconButton(onClick = { viewModel.loadFiles() }, modifier = Modifier.size(26.dp)) {
+                                    Icon(Icons.Default.Refresh, contentDescription = "Aktualisieren", tint = AccentYellow, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                FilesContentBlock()
+                            }
                         }
                     }
                 } else {
@@ -730,6 +785,42 @@ fun SectionHeader(
             color = OnSurface
         )
         trailingContent?.invoke()
+    }
+}
+
+// ── Landscape Section Label ─────────────────────────────────────────────────────
+// Zeigt den Abschnittstitel vertikal gestapelt (ein Buchstabe pro Zeile, oben→unten)
+// und einen optionalen Action-Button ganz unten im Streifen.
+
+@Composable
+fun LandscapeLabel(
+    title: String,
+    modifier: Modifier = Modifier,
+    action: (@Composable () -> Unit)? = null
+) {
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(30.dp)
+            .padding(top = 10.dp, bottom = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            title.forEach { ch ->
+                Text(
+                    text = ch.toString(),
+                    color = OnSurfaceDim,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 12.sp
+                )
+            }
+        }
+        if (action != null) {
+            action()
+        }
     }
 }
 

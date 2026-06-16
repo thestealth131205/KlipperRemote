@@ -92,6 +92,9 @@ object PrintNotificationHelper {
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setContentIntent(pendingIntent)
+            .extend(NotificationCompat.WearableExtender()
+                .setContentIcon(R.mipmap.ic_launcher)
+            )
             .build()
 
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
@@ -123,6 +126,7 @@ object PrintNotificationHelper {
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setContentIntent(pendingIntent)
+            .extend(NotificationCompat.WearableExtender())
             .build()
     }
 
@@ -165,6 +169,7 @@ object PrintNotificationHelper {
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setContentIntent(pendingIntent)
+            .extend(NotificationCompat.WearableExtender())
             .build()
 
         NotificationManagerCompat.from(context).notify(RESULT_NOTIFICATION_ID, notification)
@@ -204,6 +209,7 @@ object PrintNotificationHelper {
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_ERROR)
             .setContentIntent(pendingIntent)
+            .extend(NotificationCompat.WearableExtender())
             .build()
 
         NotificationManagerCompat.from(context).notify(RESULT_NOTIFICATION_ID, notification)
