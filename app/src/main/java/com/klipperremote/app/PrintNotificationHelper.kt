@@ -19,7 +19,7 @@ import androidx.core.content.ContextCompat
  */
 object PrintNotificationHelper {
 
-    private const val CHANNEL_ID = "print_status"
+    private const val CHANNEL_ID = "print_status_v2"
     private const val NOTIFICATION_ID = 4711
     private const val RESULT_NOTIFICATION_ID = 4712
     private const val ACCENT_COLOR = 0xFFFFFF00.toInt() // Neon-Gelb (AccentYellow)
@@ -33,7 +33,7 @@ object PrintNotificationHelper {
                 val channel = NotificationChannel(
                     CHANNEL_ID,
                     "Druckstatus",
-                    NotificationManager.IMPORTANCE_DEFAULT
+                    NotificationManager.IMPORTANCE_HIGH
                 ).apply {
                     description = "Benachrichtigungen über laufende Drucke"
                     setShowBadge(true)
@@ -85,15 +85,26 @@ object PrintNotificationHelper {
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
             .setContentText(name)
+            .setStyle(NotificationCompat.BigTextStyle()
+                .bigText("$name\n$title")
+                .setSummaryText("KlipperRemote"))
             .setColor(ACCENT_COLOR)
             .setColorized(true)
             .setProgress(100, percent, false)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setLocalOnly(false)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setContentIntent(pendingIntent)
             .extend(NotificationCompat.WearableExtender()
-                .setContentIcon(R.mipmap.ic_launcher)
+                .setHintShowBackgroundOnly(false)
+                .addPage(
+                    NotificationCompat.Builder(context, CHANNEL_ID)
+                        .setSmallIcon(R.mipmap.ic_launcher)
+                        .setContentTitle(title)
+                        .setContentText(name)
+                        .build()
+                )
             )
             .build()
 
@@ -124,9 +135,12 @@ object PrintNotificationHelper {
             .setColorized(true)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setLocalOnly(false)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setContentIntent(pendingIntent)
-            .extend(NotificationCompat.WearableExtender())
+            .extend(NotificationCompat.WearableExtender()
+                .setHintShowBackgroundOnly(false)
+            )
             .build()
     }
 

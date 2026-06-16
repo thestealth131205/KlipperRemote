@@ -36,11 +36,18 @@ class PrintMonitorService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pollJob: Job? = null
+    @Volatile private var isForegroundStarted = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundCompat()
+        // Only call startForeground once — repeated calls (from ViewModel polling every few
+        // seconds) would reset the notification to the generic "Druck wird überwacht" message,
+        // causing visible flipping between that and the real progress.
+        if (!isForegroundStarted) {
+            startForegroundCompat()
+            isForegroundStarted = true
+        }
         if (pollJob?.isActive != true) {
             pollJob = scope.launch { pollLoop() }
         }
@@ -85,6 +92,7 @@ class PrintMonitorService : Service() {
     }
 
     override fun onDestroy() {
+        isForegroundStarted = false
         pollJob?.cancel()
         scope.cancel()
         super.onDestroy()
