@@ -1,34 +1,37 @@
 # KlipperRemote
 
 Eine Android-App (Jetpack Compose) zur Fernsteuerung von 3D-Druckern über
-[Moonraker](https://moonraker.readthedocs.io/) / Klipper – Temperaturen setzen,
-Webcam-Stream ansehen und Druckstatus überwachen.
+[Moonraker](https://moonraker.readthedocs.io/) / Klipper – Temperaturen überwachen,
+Webcam-Stream ansehen, Druckstatus verfolgen, Zeitraffer abspielen und Modelle slicen.
 
 ## Was die App alles kann
 
-- **Temperatur-Steuerung** – Übersicht für Extruder, Heizbett und Kammer; Soll-Temperaturen direkt setzen.
-- **Webcam-Stream** – Live-Bild des Druckers per MJPEG.
+- **Temperatur-Steuerung** – Übersicht für Extruder, Heizbett und Kammer; Soll-Temperaturen direkt setzen; Temperaturverlauf-Diagramm.
+- **Webcam-Stream** – Live-Bild des Druckers; unterstützt MJPEG, HLS und WebRTC nativ (kein WebView). Vollbild per Tippen.
 - **Druckerstatus-Polling** – laufende Statusabfrage über Moonraker (Leerlauf / Druckt / Pausiert / Fehler).
-- **Detaillierter Druckstatus** – Restzeit, ETA, Druckgeschwindigkeit, Filamentverbrauch, Z-Höhe und Druckname.
-- **Druck-Steuerung** – Druck über die Bottombar starten, pausieren oder abbrechen.
+- **Detaillierter Druckstatus** – Fortschrittsbalken, Restzeit, ETA, Druckgeschwindigkeit, Filamentverbrauch, Z-Höhe und Druckname.
+- **Druck-Steuerung** – Druck über die Bottombar pausieren oder abbrechen.
+- **Tuning** – Druckgeschwindigkeit, Flow und Lüfter in Echtzeit anpassen.
+- **Achsensteuerung & Makros** – XY/Z-Achsen bewegen, Homing und Z-Tilt, eigene G-Code-Makros anlegen und ausführen.
+- **Routinen** – Automatisierungssequenzen definieren und mit einem Tap starten (z. B. Power an → Home → Z-Tilt).
 - **GCode-Datei-Browser** – auf dem Drucker gespeicherte Dateien durchsuchen und Druck starten.
 - **GCode-Viewer** – Vorschau mit Schicht-Slider, Zoom und farbiger Pfad-Legende.
-- **Achsensteuerung & Makros** – Achsen bewegen, Homing ausführen und eigene G-Code-Makros anlegen.
-- **Konfigurations-Editor** – Klipper-/KlipperScreen-Konfigurationsdateien (z. B. `printer.cfg`,
-  `KlipperScreen.conf`) direkt in der App mit Syntax-Hervorhebung bearbeiten und speichern.
-- **Push-Benachrichtigung** – laufender Fortschritt und ETA als Notification während des Drucks.
-- **Crash-Log-Anzeige** – integrierte Fehlerprotokolle zur Diagnose.
-- **Dunkles, modernes UI** mit farbigen Akzenten.
+- **Konfigurations-Editor** – Klipper-/KlipperScreen-Konfigurationsdateien (z. B. `printer.cfg`) direkt in der App bearbeiten.
+- **Zeitraffer-Browser** – von Moonraker-Timelapse aufgezeichnete Videos ansehen, herunterladen oder löschen. Direktwiedergabe mit ExoPlayer in der App.
+- **Slicer** – STL-, OBJ- und 3MF-Modelle in der App öffnen, in der 3D-Vorschau begutachten (Orbit-Drag, Pinch-Zoom), automatisch ausrichten, skalieren/rotieren, Stützstrukturen (organische Baum-Supports) setzen und per Vereinfachungs-Slider optimieren.
+- **Push-Benachrichtigungen** – laufender Fortschritt und ETA als Notification während des Drucks, auch auf **Wear OS**-Uhren sichtbar.
+- **Landscape-Modus** – platzsparendes Layout mit vertikalen Abschnitts-Titeln, scrollbare Spalten, kein Fortschrittsbalken (mehr Platz für Inhalt).
+- **Dunkles, modernes UI** mit neon-gelben Akzenten.
 
 ## Screenshots
 
-| Übersicht & Temperaturen | Druckstatus | Bewegen & Makros |
-|---|---|---|
-| ![Übersicht](docs/screenshots/01-uebersicht.png) | ![Druckstatus](docs/screenshots/02-druckstatus.png) | ![Bewegen & Makros](docs/screenshots/03-bewegen-makros.png) |
+| Dashboard & Webcam | Bewegen, Routinen & Makros |
+|---|---|
+| ![Dashboard & Webcam](docs/screenshots/01-dashboard-webcam.png) | ![Bewegen, Routinen & Makros](docs/screenshots/02-bewegen-makros-routinen.png) |
 
-| GCode-Viewer | Benachrichtigung | Konfigurations-Editor |
-|---|---|---|
-| ![GCode-Viewer](docs/screenshots/04-gcode-viewer.png) | ![Benachrichtigung](docs/screenshots/05-benachrichtigung.png) | ![Konfigurations-Editor](docs/screenshots/06-config-editor.png) |
+| Zeitraffer-Browser | Slicer |
+|---|---|
+| ![Zeitraffer-Browser](docs/screenshots/03-zeitraffer-browser.png) | ![Slicer](docs/screenshots/04-slicer.png) |
 
 ## Einrichtung & Verbindung
 
