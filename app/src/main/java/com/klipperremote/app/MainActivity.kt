@@ -30,6 +30,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
@@ -93,21 +95,26 @@ class MainActivity : ComponentActivity() {
                 StartupPermissionGate()
 
                 val mainContent: @Composable () -> Unit = {
+                val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+                // Im Querformat den Fortschrittsbalken ausblenden, um vertikalen Platz zu sparen.
+                val showProgressBar = uiState.printProgress != null && !isLandscape
                 Box(modifier = Modifier.fillMaxSize()) {
                 // Schwebender Fortschrittsbalken – liegt über allem außer Dialogen/Overlays
-                PrintProgressBar(
-                    progress = uiState.printProgress,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .windowInsetsPadding(WindowInsets.statusBars)
-                        .zIndex(10f)
-                )
+                if (showProgressBar) {
+                    PrintProgressBar(
+                        progress = uiState.printProgress,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .windowInsetsPadding(WindowInsets.statusBars)
+                            .zIndex(10f)
+                    )
+                }
                 NavHost(
                     navController = navController,
                     startDestination = "home",
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = if (uiState.printProgress != null) 60.dp else 0.dp)
+                        .padding(top = if (showProgressBar) 60.dp else 0.dp)
                 ) {
                     composable("home") {
                         HomeScreen(

@@ -105,6 +105,7 @@ fun HomeScreen(
     val powerDevices = uiState.powerDevices
     val isPowerOn = powerDevices.any { it.status == "on" }
     val isPrinting = uiState.printerState == "printing" || uiState.printerState == "paused"
+    val isLandscapeTop = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     Scaffold(
         containerColor = BackgroundDark,
@@ -119,19 +120,22 @@ fun HomeScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .statusBarsPadding()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            .padding(
+                                horizontal = 16.dp,
+                                vertical = if (isLandscapeTop) 4.dp else 10.dp
+                            ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             "Dashboard",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
+                            fontSize = if (isLandscapeTop) 15.sp else 18.sp,
                             color = OnSurface,
                             modifier = Modifier.weight(1f)
                         )
                         Box(
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(if (isLandscapeTop) 26.dp else 32.dp)
                                 .clip(CircleShape)
                                 .background(if (isPowerOn) AccentYellow.copy(alpha = 0.15f) else Color.Transparent)
                                 .clickable { showPowerDialog = true },
@@ -141,7 +145,7 @@ fun HomeScreen(
                                 Icons.Default.PowerSettingsNew,
                                 contentDescription = "Drucker-Power",
                                 tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f),
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(if (isLandscapeTop) 17.dp else 20.dp)
                             )
                         }
                     }
@@ -361,6 +365,7 @@ fun HomeScreen(
                             modifier = Modifier
                                 .width(colW)
                                 .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
                                 .padding(horizontal = 12.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
@@ -373,6 +378,7 @@ fun HomeScreen(
                             modifier = Modifier
                                 .width(colW)
                                 .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
                                 .padding(horizontal = 12.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
