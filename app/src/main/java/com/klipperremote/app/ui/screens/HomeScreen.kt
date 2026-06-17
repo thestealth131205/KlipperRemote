@@ -3485,7 +3485,7 @@ fun PrintInfoPanel(
     zHeight: Float?
 ) {
     val remainingSecs = if (stats.progress > 0.01f) {
-        (stats.printDuration / stats.progress * (1f - stats.progress)).toLong()
+        (stats.printDuration / stats.progress * (1f - stats.progress) / stats.speedFactor.coerceAtLeast(0.1f)).toLong()
     } else null
 
     val remainingText = remainingSecs?.let {

@@ -36,8 +36,8 @@ android {
         applicationId = "com.klipperremote.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 64
-        versionName = "1.0.63"
+        versionCode = 65
+        versionName = "1.0.64"
     }
 
     signingConfigs {

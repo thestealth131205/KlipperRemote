@@ -64,7 +64,7 @@ object PrintMonitor {
     private fun etaText(snap: PrinterSnapshot): String? {
         val s = snap.printStats ?: return null
         if (s.progress <= 0.01f) return null
-        val remainingSecs = (s.printDuration / s.progress * (1f - s.progress)).toLong()
+        val remainingSecs = (s.printDuration / s.progress * (1f - s.progress) / s.speedFactor.coerceAtLeast(0.1f)).toLong()
         val etaMillis = System.currentTimeMillis() + remainingSecs * 1000L
         val cal = java.util.Calendar.getInstance().apply { timeInMillis = etaMillis }
         return "%02d:%02d".format(

@@ -412,7 +412,10 @@ class KlipperClient(private val config: KlipperConfig) {
                     }
                 }
                 if (relPath != null) {
-                    thumbnailUrl = "$baseUrl/server/files/gcodes/$relPath"
+                    val encodedRelPath = relPath.split("/").joinToString("/") { seg ->
+                        URLEncoder.encode(seg, "UTF-8").replace("+", "%20")
+                    }
+                    thumbnailUrl = "$baseUrl/server/files/gcodes/$encodedRelPath"
                 }
             }
             GcodeMetadata(thumbnailUrl = thumbnailUrl, estimatedTime = estimatedTime)

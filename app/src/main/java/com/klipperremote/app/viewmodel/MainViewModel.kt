@@ -1106,8 +1106,15 @@ class MainViewModel @Inject constructor(
         var currentTypeComment = ""   // letzter ;TYPE: Kommentar
 
         // Segmente pro Schicht begrenzen: Zeichnen aller Segmente kostet CPU pro Frame.
-        // Bei sehr komplexen Schichten (>8000 Segmente) wird jedes N-te übernommen.
-        val MAX_SEGS = 8_000
+        // Bei sehr komplexen Schichten (>4000 Segmente) wird jedes N-te übernommen.
+        val MAX_SEGS = 4_000
+        // Globales Limit: verhindert übermäßige Parse-Zeit bei sehr großen Dateien (>20 MB).
+        // Nach 150 000 gesammelten Segmenten wird der Rest übersprungen.
+        val MAX_TOTAL_SEGS = 150_000
+        var totalSegs = 0
+
+        // Regex einmalig kompilieren (nicht in jedem Schleifendurchlauf neu erzeugen).
+        val spaceRe = Regex("\\s+")
 
         fun flushLayer() {
             if (currentSegments.isNotEmpty()) {
@@ -1124,6 +1131,8 @@ class MainViewModel @Inject constructor(
         }
 
         for (rawLine in reader.lineSequence()) {
+            if (totalSegs >= MAX_TOTAL_SEGS) break   // Datei zu groß → Rest überspringen
+
             val line = rawLine.trim()
             if (line.isBlank()) continue
 
@@ -1143,7 +1152,7 @@ class MainViewModel @Inject constructor(
             }
 
             val cmdLine = line.substringBefore(';').trim().uppercase()
-            val parts = cmdLine.split("\\s+".toRegex())
+            val parts = cmdLine.split(spaceRe)
             val cmd = parts.firstOrNull() ?: continue
             if (cmd != "G0" && cmd != "G1") continue
 
@@ -1184,6 +1193,7 @@ class MainViewModel @Inject constructor(
                     else -> com.klipperremote.app.data.model.MoveType.PRINT
                 }
                 currentSegments.add(GCodeSegment(currentX, currentY, newX, newY, moveType))
+                totalSegs++
             }
 
             currentX = newX; currentY = newY; currentZ = newZ
