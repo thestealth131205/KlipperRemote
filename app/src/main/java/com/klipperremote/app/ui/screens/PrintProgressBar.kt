@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -26,7 +27,7 @@ private val NeonYellow = Color(0xFFE8FF00)
 private val BarBackground = Color(0xFF2A2A2A)
 
 @Composable
-fun PrintProgressBar(progress: Float?, modifier: Modifier = Modifier) {
+fun PrintProgressBar(progress: Float?, modifier: Modifier = Modifier, vertical: Boolean = false) {
     if (progress == null) return
 
     val animatedProgress by animateFloatAsState(
@@ -35,6 +36,37 @@ fun PrintProgressBar(progress: Float?, modifier: Modifier = Modifier) {
         label = "printProgress"
     )
     val percent = (animatedProgress * 100).toInt()
+
+    if (vertical) {
+        // Vertikaler Balken: füllt von unten nach oben, Prozenttext um 90° gedreht
+        Box(
+            modifier = modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF3C3C3C)),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(animatedProgress.coerceIn(0f, 1f))
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(NeonYellow)
+            )
+            Box(
+                modifier = Modifier.fillMaxWidth().fillMaxHeight(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "$percent %",
+                    color = if (animatedProgress > 0.5f) Color.Black else Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.rotate(-90f)
+                )
+            }
+        }
+        return
+    }
 
     Box(
         modifier = modifier

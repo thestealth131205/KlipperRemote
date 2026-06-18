@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -110,7 +109,9 @@ fun HomeScreen(
     Scaffold(
         containerColor = BackgroundDark,
         topBar = {
-            if (uiState.config.host.isNotBlank()) {
+            // Im Querformat wandert Titel + Power-Menü vertikal an den linken Rand,
+            // daher hier keine horizontale Kopfzeile zeigen.
+            if (uiState.config.host.isNotBlank() && !isLandscapeTop) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -241,7 +242,8 @@ fun HomeScreen(
                             PrintInfoPanel(
                                 stats = stats,
                                 currentSpeed = uiState.printSpeedMmPerSec,
-                                zHeight = uiState.position.z
+                                zHeight = uiState.position.z,
+                                vertical = isLandscape
                             )
                         }
                     }
@@ -355,148 +357,87 @@ fun HomeScreen(
                     }
                 }
 
-                // Dateien-Inhalt ohne Header (für Landscape-Label-Layout)
-                val FilesContentBlock: @Composable () -> Unit = {
-                    if (uiState.files.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            uiState.files.forEach { file ->
-                                PrintFileRow(
-                                    file = file, printResult = uiState.printResults[file.filename],
-                                    onPrint = { viewModel.startPrint(file.filename) },
-                                    onViewGCode = { onOpenGCodeViewer(file.filename) }
-                                )
-                            }
-                        }
-                    }
-                }
-
                 // ── Layout ───────────────────────────────────────────────────────────
 
                 if (isLandscape) {
-                    // Landscape: vertikale Abschnitts-Labels links, Inhalt scrollbar rechts
-                    val screenW = LocalConfiguration.current.screenWidthDp.dp
-                    val colW = maxOf(screenW * 0.88f, 320.dp)
+                    // Landscape: links ein schmaler vertikaler Streifen mit Titel "Dashboard",
+                    // Power-Menü und – darunter – dem Fortschrittsbalken (von unten nach oben).
+                    // Der gesamte Inhalt rechts scrollt NUR vertikal (kein horizontales Scrollen).
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(BackgroundDark)
                             .padding(padding)
-                            .horizontalScroll(rememberScrollState())
                     ) {
-                        // Spalte 1: Status / Temperaturen
-                        Row(modifier = Modifier.width(colW).fillMaxHeight()) {
-                            LandscapeLabel(title = "Status")
-                            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .verticalScroll(rememberScrollState())
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                if (uiState.error != null) ErrorBannerBlock()
-                                PrintInfoBlock()
-                                TempGridBlock()
-                            }
-                        }
-                        // Spalte 2: Tuning (nur bei aktivem Druck)
-                        if (isPrinting) {
-                            Row(modifier = Modifier.width(colW).fillMaxHeight()) {
-                                LandscapeLabel(title = "Tuning") {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(26.dp)
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .clickable { showTuningDialog = true },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(Icons.Default.Settings, contentDescription = "Tuning öffnen", tint = AccentYellow, modifier = Modifier.size(16.dp))
-                                    }
+                        // Linker Streifen
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(46.dp)
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            // "Dashboard" vertikal Buchstabe für Buchstabe
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                "Dashboard".forEach { ch ->
+                                    Text(
+                                        text = ch.toString(),
+                                        color = OnSurface,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 13.sp
+                                    )
                                 }
-                                Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
-                                Column(
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            // Power-Menü
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isPowerOn) AccentYellow.copy(alpha = 0.15f) else Color.Transparent)
+                                    .clickable { showPowerDialog = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.PowerSettingsNew,
+                                    contentDescription = "Drucker-Power",
+                                    tint = if (isPowerOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            // Fortschrittsbalken vertikal (füllt restliche Höhe, unten → oben)
+                            if (uiState.printProgress != null) {
+                                PrintProgressBar(
+                                    progress = uiState.printProgress,
+                                    vertical = true,
                                     modifier = Modifier
                                         .weight(1f)
-                                        .fillMaxHeight()
-                                        .verticalScroll(rememberScrollState())
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    TuningBar(tuningData = uiState.tuningData, onOpenTuning = { showTuningDialog = true })
-                                }
+                                        .width(28.dp)
+                                )
                             }
                         }
-                        // Spalte 3: Webcam
-                        Row(modifier = Modifier.width(colW).fillMaxHeight()) {
-                            LandscapeLabel(title = "Webcam") {
-                                Box(
-                                    modifier = Modifier
-                                        .size(26.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable { showWebcamSettings = true },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Settings, contentDescription = "Webcam Einstellungen", tint = AccentYellow, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .verticalScroll(rememberScrollState())
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                WebcamOnlyBlock()
-                            }
-                        }
-                        // Spalte 4: Bewegen
-                        Row(modifier = Modifier.width(colW).fillMaxHeight()) {
-                            LandscapeLabel(title = "Bewegen") {
-                                Box(
-                                    modifier = Modifier
-                                        .size(26.dp)
-                                        .alpha(if (isPrinting) 0.4f else 1f)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(Color(0xFF2A2A2A))
-                                        .clickable(enabled = !isPrinting) { viewModel.motorsOff() },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Stop, contentDescription = "Motor Abschalten", tint = OnSurfaceDim, modifier = Modifier.size(14.dp))
-                                }
-                            }
-                            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .verticalScroll(rememberScrollState())
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                BewegenBlock()
-                            }
-                        }
-                        // Spalte 5: Druckdateien
-                        Row(modifier = Modifier.width(colW).fillMaxHeight()) {
-                            LandscapeLabel(title = "Dateien") {
-                                IconButton(onClick = { viewModel.loadFiles() }, modifier = Modifier.size(26.dp)) {
-                                    Icon(Icons.Default.Refresh, contentDescription = "Aktualisieren", tint = AccentYellow, modifier = Modifier.size(14.dp))
-                                }
-                            }
-                            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .verticalScroll(rememberScrollState())
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                FilesContentBlock()
-                            }
+                        Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF2A2A2A)))
+                        // Hauptinhalt – einspaltig, nur vertikal scrollbar
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            if (uiState.error != null) ErrorBannerBlock()
+                            PrintInfoBlock()
+                            TempGridBlock()
+                            WebcamHeaderBlock()
+                            WebcamCardBlock()
+                            BewegenHeaderBlock()
+                            BewegenBlock()
+                            FilesBlock()
+                            Spacer(Modifier.height(8.dp))
                         }
                     }
                 } else {
@@ -822,42 +763,6 @@ fun SectionHeader(
             color = OnSurface
         )
         trailingContent?.invoke()
-    }
-}
-
-// ── Landscape Section Label ─────────────────────────────────────────────────────
-// Zeigt den Abschnittstitel vertikal gestapelt (ein Buchstabe pro Zeile, oben→unten)
-// und einen optionalen Action-Button ganz unten im Streifen.
-
-@Composable
-fun LandscapeLabel(
-    title: String,
-    modifier: Modifier = Modifier,
-    action: (@Composable () -> Unit)? = null
-) {
-    Column(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(30.dp)
-            .padding(top = 10.dp, bottom = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            title.forEach { ch ->
-                Text(
-                    text = ch.toString(),
-                    color = OnSurfaceDim,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.Center,
-                    lineHeight = 12.sp
-                )
-            }
-        }
-        if (action != null) {
-            action()
-        }
     }
 }
 
@@ -2444,6 +2349,7 @@ fun BottomControlBar(
     onOpenConsole: () -> Unit = {}
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val isLandscapeBar = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val statusText = when (printerState) {
         "ready" -> "Leerlauf"
         "printing" -> "Druckt"
@@ -2469,7 +2375,7 @@ fun BottomControlBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = if (isLandscapeBar) 4.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -2497,7 +2403,7 @@ fun BottomControlBar(
                 onClick = printAction,
                 modifier = Modifier
                     .weight(1f)
-                    .height(44.dp),
+                    .height(if (isLandscapeBar) 36.dp else 44.dp),
                 shape = RoundedCornerShape(22.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = printColor,
@@ -3482,7 +3388,8 @@ fun PrintFileRow(
 fun PrintInfoPanel(
     stats: PrintStats,
     currentSpeed: Float?,
-    zHeight: Float?
+    zHeight: Float?,
+    vertical: Boolean = false
 ) {
     val remainingSecs = if (stats.progress > 0.01f) {
         (stats.printDuration / stats.progress * (1f - stats.progress) / stats.speedFactor.coerceAtLeast(0.1f)).toLong()
@@ -3514,6 +3421,25 @@ fun PrintInfoPanel(
         if (it.length > 32) it.take(29) + "…" else it
     }
 
+    if (vertical) {
+        // Querformat: Kacheln vertikal von oben nach unten gestapelt, kompakte Überschrift
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            PrintInfoCard("Verbleibend", remainingText, Modifier.fillMaxWidth(), compact = true)
+            PrintInfoCard("ETA",         etaText,       Modifier.fillMaxWidth(), compact = true)
+            PrintInfoCard("Geschw.",     speedText,     Modifier.fillMaxWidth(), compact = true)
+            PrintInfoCard("Max Geschw.", maxVelText,    Modifier.fillMaxWidth(), compact = true)
+            PrintInfoCard("Volumen",     volumeText,    Modifier.fillMaxWidth(), compact = true)
+            PrintInfoCard("Filament",    filamentText,  Modifier.fillMaxWidth(), compact = true)
+            PrintInfoCard("Ebene",       layerText,     Modifier.fillMaxWidth(), compact = true)
+            PrintInfoCard("Z Höhe",      zText,         Modifier.fillMaxWidth(), compact = true)
+            PrintInfoCard("Druckname",   filename,      Modifier.fillMaxWidth(), compact = true)
+        }
+        return
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -3537,24 +3463,43 @@ fun PrintInfoPanel(
 }
 
 @Composable
-private fun PrintInfoCard(label: String, value: String, modifier: Modifier = Modifier) {
+private fun PrintInfoCard(label: String, value: String, modifier: Modifier = Modifier, compact: Boolean = false) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF1C1C1C))
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(horizontal = 12.dp, vertical = if (compact) 6.dp else 10.dp)
     ) {
-        Column {
-            Text(label, color = OnSurfaceDim, fontSize = 11.sp)
-            Spacer(Modifier.height(3.dp))
-            Text(
-                value,
-                color = OnSurface,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        if (compact) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(label, color = OnSurfaceDim, fontSize = 10.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    value,
+                    color = OnSurface,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        } else {
+            Column {
+                Text(label, color = OnSurfaceDim, fontSize = 11.sp)
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    value,
+                    color = OnSurface,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }
