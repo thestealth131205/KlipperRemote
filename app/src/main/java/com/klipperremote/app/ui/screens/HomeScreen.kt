@@ -918,9 +918,11 @@ fun TempHistoryCard(
     maxCelsius: Int = 300,
     modifier: Modifier = Modifier
 ) {
-    val rangeMin = minCelsius.toFloat()
-    val rangeMax = maxCelsius.toFloat().coerceAtLeast(rangeMin + 10f)
-    val rangeSpan = rangeMax - rangeMin
+    // Dynamisches 50°C-Fenster pro Sensor: aktueller Wert - 10°C (Unterkante) bis + 40°C (Oberkante).
+    // Jede Temperatur skaliert für sich → Veränderungen sind auch bei sehr unterschiedlichen
+    // Absolutwerten (z.B. Extruder 200°C vs. Bett 60°C) gut sichtbar.
+    val WINDOW_SIZE = 50f
+    val WINDOW_LOWER_MARGIN = 10f  // aktuelle Temp liegt 10°C über der Unterkante
 
     // Feste Farben pro Heizer-Typ; Rest nach Index
     val baseColors = listOf(
@@ -946,11 +948,19 @@ fun TempHistoryCard(
         }.toMap()
     }
 
-    val yStep = when {
-        rangeSpan > 250f -> 50f
-        rangeSpan > 100f -> 25f
-        else -> 10f
+    // Pro Sensor: Fenster [currentTemp - 10, currentTemp + 40] (= 50°C)
+    val sensorWindows: Map<String, Pair<Float, Float>> = remember(history, sortedKeys) {
+        sortedKeys.associateWith { name ->
+            val currentTemp = history[name]?.lastOrNull()?.second ?: 20f
+            val winMin = (currentTemp - WINDOW_LOWER_MARGIN).coerceAtLeast(0f)
+            winMin to (winMin + WINDOW_SIZE)
+        }
     }
+    // Y-Achse des kleinen Graphen richtet sich nach dem ersten/Haupt-Sensor (Extruder)
+    val primaryWindow = sensorWindows[sortedKeys.firstOrNull()] ?: (10f to 60f)
+    val primaryMin = primaryWindow.first
+    val primaryMax = primaryWindow.second
+    val yStep = 10f  // bei 50°C-Fenster immer 10°C-Schritte
 
     val hasEnoughData = sortedKeys.any { (history[it]?.size ?: 0) >= 2 }
 
@@ -1030,7 +1040,7 @@ fun TempHistoryCard(
 
                 // Graph: Y-Achse links + Zeichenfläche rechts
                 Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    // Y-Achsen-Beschriftung per nativeCanvas
+                    // Y-Achsen-Beschriftung (Haupt-Sensor = erster, i.d.R. Extruder)
                     Canvas(modifier = Modifier.width(22.dp).fillMaxHeight()) {
                         val h = size.height
                         val paint = android.graphics.Paint().apply {
@@ -1039,10 +1049,10 @@ fun TempHistoryCard(
                             textAlign = android.graphics.Paint.Align.RIGHT
                             isAntiAlias = true
                         }
-                        var t = (rangeMin / yStep).toInt() * yStep
-                        while (t <= rangeMax + 0.1f) {
-                            if (t >= rangeMin - 0.1f) {
-                                val yFrac = (t - rangeMin) / rangeSpan
+                        var t = (primaryMin / yStep).toInt() * yStep
+                        while (t <= primaryMax + 0.1f) {
+                            if (t >= primaryMin - 0.1f) {
+                                val yFrac = (t - primaryMin) / WINDOW_SIZE
                                 val y = h - yFrac * h
                                 drawContext.canvas.nativeCanvas.drawText(
                                     "${t.toInt()}",
@@ -1064,11 +1074,11 @@ fun TempHistoryCard(
                         val now = System.currentTimeMillis()
                         val windowMs = 10L * 60 * 1000  // 10 Minuten
 
-                        // Gitterlinien
-                        var gridT = (rangeMin / yStep).toInt() * yStep
-                        while (gridT <= rangeMax + 0.1f) {
-                            if (gridT >= rangeMin - 0.1f) {
-                                val yFrac = (gridT - rangeMin) / rangeSpan
+                        // Gitterlinien nach Haupt-Sensor-Fenster (primaryMin/primaryMax)
+                        var gridT = (primaryMin / yStep).toInt() * yStep
+                        while (gridT <= primaryMax + 0.1f) {
+                            if (gridT >= primaryMin - 0.1f) {
+                                val yFrac = (gridT - primaryMin) / WINDOW_SIZE
                                 val y = h - yFrac * h
                                 drawLine(
                                     color = Color.White.copy(alpha = 0.08f),
@@ -1080,8 +1090,9 @@ fun TempHistoryCard(
                             gridT += yStep
                         }
 
-                        // Temperaturkurven – nur die letzten 10 Minuten zeichnen
+                        // Temperaturkurven – jeder Sensor in seinem eigenen 50°C-Fenster
                         sortedKeys.forEach { name ->
+                            val (winMin, _) = sensorWindows[name] ?: return@forEach
                             val points = history[name]
                                 ?.filter { it.second >= 0f && it.first >= now - windowMs } ?: return@forEach
                             if (points.size < 2) return@forEach
@@ -1090,7 +1101,8 @@ fun TempHistoryCard(
                             var moved = false
                             points.forEach { (timeMs, temp) ->
                                 val xFrac = ((timeMs - (now - windowMs)).toFloat() / windowMs).coerceIn(0f, 1f)
-                                val yFrac = ((temp - rangeMin) / rangeSpan).coerceIn(0f, 1f)
+                                // Y-Normierung gegen das sensor-eigene 50°C-Fenster
+                                val yFrac = ((temp - winMin) / WINDOW_SIZE).coerceIn(0f, 1f)
                                 val x = xFrac * w
                                 val y = h - yFrac * h
                                 if (!moved) { path.moveTo(x, y); moved = true }
