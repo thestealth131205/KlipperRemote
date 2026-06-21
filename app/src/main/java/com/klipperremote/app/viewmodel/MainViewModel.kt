@@ -122,7 +122,7 @@ data class MainUiState(
     // Druckergebnis je Dateiname: true = erfolgreich, false = abgebrochen/Fehler.
     // Steuert das Symbol neben Vorschau-/Play-Button in der Dateiliste.
     val printResults: Map<String, Boolean> = emptyMap(),
-    // Temperaturverlauf der letzten ~10 Min. (max. 120 Punkte pro Heizer).
+    // Temperaturverlauf über den ganzen Druck (persistent, ~10-s-Auflösung).
     // Key = Heizer-Name, Value = Liste von (timestampMs, temperaturCelsius).
     val temperatureHistory: Map<String, List<Pair<Long, Float>>> = emptyMap(),
     // Gespeicherte Routinen (max. 4)
@@ -248,6 +248,11 @@ class MainViewModel @Inject constructor(
             val loaded = loadRoutinesFromDisk()
             if (loaded.isNotEmpty()) _uiState.update { it.copy(routines = loaded) }
         }
+        // Persistierten Temperaturverlauf laden (Graph nach App-Neustart nahtlos fortsetzen).
+        viewModelScope.launch(Dispatchers.IO) {
+            val loaded = loadTempHistoryFromDisk()
+            if (loaded.isNotEmpty()) _uiState.update { it.copy(temperatureHistory = loaded) }
+        }
         startPolling()
         collectWsSnapshot()
         // Direkt beim Start einen vollständigen Snapshot holen, damit ein bereits
@@ -277,6 +282,84 @@ class MainViewModel @Inject constructor(
             tmp.writeText(gson.toJson(routines))
             tmp.renameTo(routinesFile)
         }
+    }
+
+    // ── Temperaturverlauf (persistent, über den ganzen Druck) ───────────────────
+    // Der Verlauf wird auf Disk gespeichert, damit der Graph beim Verlassen und
+    // erneuten Öffnen der App nicht neu aufgebaut werden muss. Er bleibt erhalten,
+    // bis der nächste Druck startet – dann wird er gelöscht und neu geschrieben.
+    private companion object {
+        // Höchstens alle 10 s einen Punkt pro Heizer (begrenzt die Datenmenge bei langen Drucken).
+        const val TEMP_HISTORY_SAMPLE_MS = 10_000L
+        // Verlauf nur alle 20 s auf Disk schreiben (Schreiblast begrenzen).
+        const val TEMP_HISTORY_DISK_WRITE_MS = 20_000L
+        // Obergrenze je Heizer (bei ~10 s ≈ 27 h Druck) – ältester Punkt wird verworfen.
+        const val TEMP_HISTORY_MAX_POINTS = 10_000
+    }
+
+    @Volatile private var lastTempHistoryDiskWriteMs = 0L
+    // Zustand für die Erkennung eines neu gestarteten Drucks (null = noch nicht initialisiert).
+    private var historyWasActive: Boolean? = null
+    private var historyFilename: String = ""
+
+    private val tempHistoryFile get() = java.io.File(appContext.filesDir, "temp_history.json")
+
+    private fun loadTempHistoryFromDisk(): Map<String, List<Pair<Long, Float>>> = runCatching {
+        if (!tempHistoryFile.exists()) return@runCatching emptyMap<String, List<Pair<Long, Float>>>()
+        val obj = org.json.JSONObject(tempHistoryFile.readText())
+        buildMap {
+            obj.keys().forEach { key ->
+                val arr = obj.getJSONArray(key)
+                val pts = ArrayList<Pair<Long, Float>>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val p = arr.getJSONArray(i)
+                    pts.add(Pair(p.getLong(0), p.getDouble(1).toFloat()))
+                }
+                put(key, pts)
+            }
+        }
+    }.getOrDefault(emptyMap())
+
+    private fun saveTempHistoryToDisk(history: Map<String, List<Pair<Long, Float>>>) {
+        runCatching {
+            val obj = org.json.JSONObject()
+            history.forEach { (name, pts) ->
+                val arr = org.json.JSONArray()
+                pts.forEach { (ts, t) -> arr.put(org.json.JSONArray().put(ts).put(t.toDouble())) }
+                obj.put(name, arr)
+            }
+            val tmp = java.io.File(appContext.filesDir, "temp_history.json.tmp")
+            tmp.writeText(obj.toString())
+            tmp.renameTo(tempHistoryFile)
+        }
+    }
+
+    /** Löscht den gespeicherten Temperaturverlauf (Speicher + Disk). */
+    private fun clearTemperatureHistory() {
+        _uiState.update { it.copy(temperatureHistory = emptyMap()) }
+        lastTempHistoryDiskWriteMs = 0L
+        viewModelScope.launch(Dispatchers.IO) { runCatching { tempHistoryFile.delete() } }
+    }
+
+    /**
+     * Erkennt anhand des Snapshots, ob ein neuer Druck gestartet wurde, und löscht
+     * dann den bisherigen Verlauf (er wird anschließend neu aufgebaut). Beim ersten
+     * Snapshot nach App-Start wird NICHT gelöscht (laufender Druck behält den Verlauf).
+     */
+    private fun detectNewPrintForHistory(snap: com.klipperremote.app.data.model.PrinterSnapshot) {
+        val active = snap.printerState == "printing" || snap.printerState == "paused"
+        val filename = snap.printStats?.filename ?: ""
+        val prevActive = historyWasActive
+        if (prevActive == null) {
+            historyWasActive = active
+            if (active && filename.isNotBlank()) historyFilename = filename
+            return
+        }
+        val newPrintStarted = (active && !prevActive) ||
+            (active && filename.isNotBlank() && historyFilename.isNotBlank() && filename != historyFilename)
+        if (newPrintStarted) clearTemperatureHistory()
+        historyWasActive = active
+        if (active && filename.isNotBlank()) historyFilename = filename
     }
 
     fun saveRoutine(routine: RoutineData) {
@@ -426,6 +509,7 @@ class MainViewModel @Inject constructor(
                             tuningData         = snap.tuningData
                         )
                     }
+                    updateTempHistory(snap.temperatures)
                     reportConnectionResult(success = true)
                     processPrintLifecycle(snap)
                 }
@@ -451,6 +535,15 @@ class MainViewModel @Inject constructor(
     fun setAppForeground(inForeground: Boolean) {
         val wasInForeground = appInForeground
         appInForeground = inForeground
+        if (!inForeground && wasInForeground) {
+            // Beim Wechsel in den Hintergrund den aktuellen Verlauf sofort sichern,
+            // damit auch die letzten (noch nicht gedrosselt geschriebenen) Punkte überleben.
+            val snapshot = _uiState.value.temperatureHistory.mapValues { it.value.toList() }
+            if (snapshot.isNotEmpty()) {
+                lastTempHistoryDiskWriteMs = System.currentTimeMillis()
+                viewModelScope.launch(Dispatchers.IO) { saveTempHistoryToDisk(snapshot) }
+            }
+        }
         if (inForeground && !wasInForeground && !connectionPaused) {
             // Beim Zurückkehren in den Vordergrund sofort den vollständigen Snapshot
             // (inkl. Druckerzustand/Fortschritt) holen, damit ein laufender Druck nicht
@@ -505,14 +598,31 @@ class MainViewModel @Inject constructor(
         val now = System.currentTimeMillis()
         val old = _uiState.value.temperatureHistory
         val updated = old.toMutableMap()
+        var changed = false
         temps.forEach { t ->
             // Alle Heizer und Temperatursensoren tracken (kein Namensfilter)
-            val history = (updated[t.name] ?: emptyList()).toMutableList()
-            history.add(Pair(now, t.current))
-            if (history.size > 120) history.subList(0, history.size - 120).clear()
-            updated[t.name] = history
+            val history = updated[t.name] ?: emptyList()
+            val last = history.lastOrNull()
+            // Downsampling: höchstens alle TEMP_HISTORY_SAMPLE_MS einen Punkt je Heizer,
+            // damit der Verlauf über den ganzen (langen) Druck handhabbar bleibt.
+            if (last == null || now - last.first >= TEMP_HISTORY_SAMPLE_MS) {
+                val newList = history.toMutableList()
+                newList.add(Pair(now, t.current))
+                if (newList.size > TEMP_HISTORY_MAX_POINTS) {
+                    newList.subList(0, newList.size - TEMP_HISTORY_MAX_POINTS).clear()
+                }
+                updated[t.name] = newList
+                changed = true
+            }
         }
+        if (!changed) return
         _uiState.update { it.copy(temperatureHistory = updated) }
+        // Verlauf gedrosselt auf Disk persistieren (überlebt App-Neustart).
+        if (now - lastTempHistoryDiskWriteMs >= TEMP_HISTORY_DISK_WRITE_MS) {
+            lastTempHistoryDiskWriteMs = now
+            val snapshot = updated.mapValues { it.value.toList() }
+            viewModelScope.launch(Dispatchers.IO) { saveTempHistoryToDisk(snapshot) }
+        }
     }
 
     private suspend fun fetchTemperaturesInternal() {
@@ -578,6 +688,8 @@ class MainViewModel @Inject constructor(
      * und das Ergebnis-Symbol persistiert.
      */
     private fun processPrintLifecycle(snap: com.klipperremote.app.data.model.PrinterSnapshot) {
+        // Bei einem neu gestarteten Druck den Temperaturverlauf zurücksetzen.
+        detectNewPrintForHistory(snap)
         val printing = snap.printerState == "printing" || snap.printerState == "paused"
         // Hintergrund-Überwachung an den Druckstatus koppeln (zuverlässige Updates im Hintergrund).
         if (printing) PrintMonitorService.start(appContext)

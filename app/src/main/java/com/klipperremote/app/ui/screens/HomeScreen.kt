@@ -954,10 +954,24 @@ fun TempHistoryCard(
 
     val hasEnoughData = sortedKeys.any { (history[it]?.size ?: 0) >= 2 }
 
+    var showFull by remember { mutableStateOf(false) }
+
+    if (showFull) {
+        TempHistoryFullscreenDialog(
+            history = history,
+            sortedKeys = sortedKeys,
+            colorMap = colorMap,
+            minCelsius = minCelsius,
+            maxCelsius = maxCelsius,
+            onDismiss = { showFull = false }
+        )
+    }
+
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .background(Color(0xFF1C1C1C))
+            .clickable(enabled = hasEnoughData) { showFull = true }
     ) {
         Column(
             modifier = Modifier
@@ -965,7 +979,7 @@ fun TempHistoryCard(
                 .padding(horizontal = 8.dp, vertical = 8.dp)
         ) {
             Text(
-                "Verlauf",
+                "Verlauf · 10 min",
                 color = OnSurfaceDim,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.SemiBold
@@ -1066,9 +1080,10 @@ fun TempHistoryCard(
                             gridT += yStep
                         }
 
-                        // Temperaturkurven
+                        // Temperaturkurven – nur die letzten 10 Minuten zeichnen
                         sortedKeys.forEach { name ->
-                            val points = history[name]?.filter { it.second >= 0f } ?: return@forEach
+                            val points = history[name]
+                                ?.filter { it.second >= 0f && it.first >= now - windowMs } ?: return@forEach
                             if (points.size < 2) return@forEach
                             val color = colorMap[name] ?: Color.White
                             val path = Path()
@@ -1095,6 +1110,229 @@ fun TempHistoryCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * Große Vollbild-Ansicht des Temperaturverlaufs über den GANZEN bisherigen Druck
+ * (im Gegensatz zur kleinen Karte, die nur die letzten 10 Minuten zeigt).
+ */
+@Composable
+fun TempHistoryFullscreenDialog(
+    history: Map<String, List<Pair<Long, Float>>>,
+    sortedKeys: List<String>,
+    colorMap: Map<String, Color>,
+    minCelsius: Int,
+    maxCelsius: Int,
+    onDismiss: () -> Unit
+) {
+    val rangeMin = minCelsius.toFloat()
+    val rangeMax = maxCelsius.toFloat().coerceAtLeast(rangeMin + 10f)
+    val rangeSpan = rangeMax - rangeMin
+    val yStep = when {
+        rangeSpan > 250f -> 50f
+        rangeSpan > 100f -> 25f
+        else -> 10f
+    }
+
+    // Globaler Zeitbereich über alle Heizer (Start bis Ende des bisherigen Drucks).
+    val allPoints = sortedKeys.mapNotNull { history[it]?.filter { p -> p.second >= 0f } }
+        .filter { it.isNotEmpty() }
+    val tMin = allPoints.minOfOrNull { it.first().first } ?: 0L
+    val tMax = allPoints.maxOfOrNull { it.last().first } ?: (tMin + 1L)
+    val tSpan = (tMax - tMin).coerceAtLeast(1L)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF101010))
+                .padding(16.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Kopfzeile
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Temperaturverlauf",
+                            color = OnSurface,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Gesamter Druck · ${formatElapsed(tSpan)}",
+                            color = OnSurfaceDim,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onDismiss() }
+                            .background(AccentYellow.copy(alpha = 0.15f))
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text("Schließen", color = AccentYellow, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                // Legende mit aktuellem Wert je Heizer
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    sortedKeys.forEach { name ->
+                        val color = colorMap[name] ?: Color.White
+                        val shortName = when {
+                            name == "extruder" -> "Extruder"
+                            name.startsWith("extruder") -> "Extruder ${name.removePrefix("extruder").trim()}"
+                            name == "heater_bed" -> "Bett"
+                            name.startsWith("heater_generic ") -> name.removePrefix("heater_generic ")
+                            name.startsWith("temperature_sensor ") -> name.removePrefix("temperature_sensor ")
+                            else -> name
+                        }
+                        val current = history[name]?.lastOrNull { it.second >= 0f }?.second
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Canvas(modifier = Modifier.size(14.dp, 6.dp)) {
+                                drawLine(
+                                    color = color,
+                                    start = Offset(0f, size.height / 2f),
+                                    end = Offset(size.width, size.height / 2f),
+                                    strokeWidth = 2.dp.toPx()
+                                )
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                if (current != null) "$shortName  %.1f°C".format(current) else shortName,
+                                color = color.copy(alpha = 0.9f),
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Graph: Y-Achse links + Zeichenfläche
+                Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    Canvas(modifier = Modifier.width(34.dp).fillMaxHeight()) {
+                        val h = size.height
+                        val paint = android.graphics.Paint().apply {
+                            color = android.graphics.Color.argb(150, 200, 200, 200)
+                            textSize = 10.dp.toPx()
+                            textAlign = android.graphics.Paint.Align.RIGHT
+                            isAntiAlias = true
+                        }
+                        var t = (rangeMin / yStep).toInt() * yStep
+                        while (t <= rangeMax + 0.1f) {
+                            if (t >= rangeMin - 0.1f) {
+                                val yFrac = (t - rangeMin) / rangeSpan
+                                val y = h - yFrac * h
+                                drawContext.canvas.nativeCanvas.drawText(
+                                    "${t.toInt()}",
+                                    size.width - 2.dp.toPx(),
+                                    y + 4.dp.toPx(),
+                                    paint
+                                )
+                            }
+                            t += yStep
+                        }
+                    }
+
+                    Spacer(Modifier.width(4.dp))
+
+                    Canvas(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                        val w = size.width
+                        val h = size.height
+
+                        // Horizontale Temperatur-Gitterlinien
+                        var gridT = (rangeMin / yStep).toInt() * yStep
+                        while (gridT <= rangeMax + 0.1f) {
+                            if (gridT >= rangeMin - 0.1f) {
+                                val yFrac = (gridT - rangeMin) / rangeSpan
+                                val y = h - yFrac * h
+                                drawLine(
+                                    color = Color.White.copy(alpha = 0.08f),
+                                    start = Offset(0f, y),
+                                    end = Offset(w, y),
+                                    strokeWidth = 1f
+                                )
+                            }
+                            gridT += yStep
+                        }
+
+                        // Vertikale Zeit-Gitterlinien + Beschriftung (4 Abschnitte)
+                        val timePaint = android.graphics.Paint().apply {
+                            color = android.graphics.Color.argb(130, 200, 200, 200)
+                            textSize = 9.dp.toPx()
+                            textAlign = android.graphics.Paint.Align.CENTER
+                            isAntiAlias = true
+                        }
+                        val divisions = 4
+                        for (i in 0..divisions) {
+                            val frac = i.toFloat() / divisions
+                            val x = frac * w
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.06f),
+                                start = Offset(x, 0f),
+                                end = Offset(x, h),
+                                strokeWidth = 1f
+                            )
+                            val label = formatElapsed((tSpan * frac).toLong())
+                            val tx = x.coerceIn(12.dp.toPx(), w - 12.dp.toPx())
+                            drawContext.canvas.nativeCanvas.drawText(label, tx, h - 2.dp.toPx(), timePaint)
+                        }
+
+                        // Temperaturkurven über den ganzen Zeitbereich
+                        sortedKeys.forEach { name ->
+                            val points = history[name]?.filter { it.second >= 0f } ?: return@forEach
+                            if (points.size < 2) return@forEach
+                            val color = colorMap[name] ?: Color.White
+                            val path = Path()
+                            var moved = false
+                            points.forEach { (timeMs, temp) ->
+                                val xFrac = ((timeMs - tMin).toFloat() / tSpan).coerceIn(0f, 1f)
+                                val yFrac = ((temp - rangeMin) / rangeSpan).coerceIn(0f, 1f)
+                                val x = xFrac * w
+                                val y = h - yFrac * h
+                                if (!moved) { path.moveTo(x, y); moved = true }
+                                else path.lineTo(x, y)
+                            }
+                            drawPath(
+                                path,
+                                color = color,
+                                style = Stroke(
+                                    width = 2.dp.toPx(),
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Formatiert eine Zeitspanne in ms als "Xh Ym", "Ym" oder "Xs". */
+private fun formatElapsed(ms: Long): String {
+    val totalSec = ms / 1000
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return when {
+        h > 0 -> "${h}h ${m}m"
+        m > 0 -> "${m}m"
+        else -> "${s}s"
     }
 }
 
