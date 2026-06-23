@@ -15,6 +15,7 @@ import com.klipperremote.app.data.model.ConfigFile
 import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.DriverSettings
+import com.klipperremote.app.data.model.DriverEdit
 import com.klipperremote.app.data.model.GCodeLayer
 import com.klipperremote.app.data.model.GCodeSegment
 import com.klipperremote.app.data.model.GcodeMetadata
@@ -1467,25 +1468,24 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    // Lauf-/Halte-Strom je Achse live anwenden (SET_TMC_CURRENT).
-    // edits: stepperName → Paar(runCurrent, holdCurrent?)
-    fun saveDriverSettings(edits: Map<String, Pair<Float, Float?>>) {
+    // Treiber-Einstellungen anwenden (Strom live + alle Werte persistent in Config).
+    fun saveDriverSettings(edits: List<DriverEdit>) {
         if (edits.isEmpty()) return
+        val needsRestart = edits.any { it.needsRestart }
         _uiState.update { it.copy(driverSettingsSaving = true, driverSettingsSaved = false, driverSettingsError = null) }
         queue.enqueueHigh {
-            var firstError: String? = null
-            for ((stepper, currents) in edits) {
-                val res = repository.setDriverCurrent(stepper, currents.first, currents.second)
-                if (res.isFailure && firstError == null) {
-                    firstError = res.exceptionOrNull()?.message
-                }
-            }
-            if (firstError == null) {
+            val res = repository.applyDriverSettings(edits)
+            if (res.isSuccess) {
                 _uiState.update { it.copy(driverSettingsSaving = false, driverSettingsSaved = true) }
+                // Nach einem Neustart braucht Klipper kurz, bis die Settings neu geparst sind.
+                delay(if (needsRestart) 6000L else 800L)
+                loadDriverSettings()
                 delay(2000L)
                 _uiState.update { it.copy(driverSettingsSaved = false) }
             } else {
-                _uiState.update { it.copy(driverSettingsSaving = false, driverSettingsError = firstError) }
+                _uiState.update {
+                    it.copy(driverSettingsSaving = false, driverSettingsError = res.exceptionOrNull()?.message)
+                }
             }
         }
     }

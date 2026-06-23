@@ -9,6 +9,7 @@ import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.AxisDriver
 import com.klipperremote.app.data.model.DriverSettings
+import com.klipperremote.app.data.model.DriverEdit
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
 import com.klipperremote.app.data.model.PowerDevice
@@ -886,7 +887,7 @@ class KlipperClient(private val config: KlipperConfig) {
 
             // Klipper-Settings-Schlüssel sind kleingeschrieben (z. B. "tmc2209 stepper_x")
             val tmcPrefixes = listOf("tmc2209", "tmc2208", "tmc2130", "tmc2240", "tmc5160", "tmc2660")
-            val axes = listOf("X" to "stepper_x", "Y" to "stepper_y", "Z" to "stepper_z").map { (axis, stepper) ->
+            var axes = listOf("X" to "stepper_x", "Y" to "stepper_y", "Z" to "stepper_z").map { (axis, stepper) ->
                 val stepperObj = settings.optJSONObject(stepper)
                 var driverType = ""
                 var runCurrent: Float? = null
@@ -911,22 +912,171 @@ class KlipperClient(private val config: KlipperConfig) {
                         ?.takeIf { !it.isNaN() }?.toFloat()
                 )
             }
+
+            // Live-Ströme aus den TMC-Status-Objekten lesen. Diese spiegeln SET_TMC_CURRENT
+            // wider; die configfile-Settings dagegen sind der beim Start geparste Stand und
+            // ändern sich erst nach einem FIRMWARE_RESTART. Ohne diesen Schritt würden gerade
+            // live gesetzte Stromwerte beim erneuten Öffnen wieder „zurückspringen".
+            val tmcAxes = axes.filter { it.driverType.isNotBlank() }
+            if (tmcAxes.isNotEmpty()) {
+                val q = StringBuilder("$baseUrl/printer/objects/query?")
+                tmcAxes.forEachIndexed { i, a ->
+                    if (i > 0) q.append("&")
+                    val obj = "${a.driverType} ${a.stepperName}"
+                    q.append(URLEncoder.encode(obj, "UTF-8").replace("+", "%20"))
+                        .append("=run_current,hold_current")
+                }
+                val statusBody = runCatching {
+                    client.newCall(Request.Builder().url(q.toString()).get().build())
+                        .execute().body?.string()
+                }.getOrNull()
+                val liveStatus = statusBody?.let {
+                    runCatching {
+                        JSONObject(it).optJSONObject("result")?.optJSONObject("status")
+                    }.getOrNull()
+                }
+                if (liveStatus != null) {
+                    axes = axes.map { a ->
+                        if (a.driverType.isBlank()) return@map a
+                        val o = liveStatus.optJSONObject("${a.driverType} ${a.stepperName}") ?: return@map a
+                        a.copy(
+                            runCurrent = o.optDouble("run_current", Double.NaN)
+                                .takeIf { !it.isNaN() }?.toFloat() ?: a.runCurrent,
+                            holdCurrent = o.optDouble("hold_current", Double.NaN)
+                                .takeIf { !it.isNaN() }?.toFloat() ?: a.holdCurrent
+                        )
+                    }
+                }
+            }
+
             DriverSettings(axes = axes)
         } catch (e: Exception) {
             DriverSettings()
         }
     }
 
-    // Lauf-/Halte-Strom einer Achse live setzen: SET_TMC_CURRENT
-    suspend fun setDriverCurrent(stepperName: String, runCurrent: Float, holdCurrent: Float?): Result<Unit> =
+    // Treiber-Einstellungen anwenden und persistieren.
+    //  • run_current/hold_current → sofort live via SET_TMC_CURRENT
+    //  • rotation_distance        → sofort live via SET_ROTATION_DISTANCE
+    //  • alle Werte               → zusätzlich in die Config-Datei geschrieben (Persistenz)
+    //  • microsteps/rotation_distance geändert → FIRMWARE_RESTART, damit sie greifen
+    suspend fun applyDriverSettings(edits: List<DriverEdit>): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val loc = java.util.Locale.US
-                val sb = StringBuilder("SET_TMC_CURRENT STEPPER=$stepperName CURRENT=${String.format(loc, "%.2f", runCurrent)}")
-                if (holdCurrent != null) sb.append(" HOLDCURRENT=${String.format(loc, "%.2f", holdCurrent)}")
-                sendGcodeInternal(sb.toString())
+
+                // 1) Live anwenden
+                for (e in edits) {
+                    if (e.driverType.isNotBlank() && e.runCurrent != null) {
+                        val sb = StringBuilder(
+                            "SET_TMC_CURRENT STEPPER=${e.stepperName} CURRENT=${String.format(loc, "%.2f", e.runCurrent)}"
+                        )
+                        if (e.holdCurrent != null) {
+                            sb.append(" HOLDCURRENT=${String.format(loc, "%.2f", e.holdCurrent)}")
+                        }
+                        sendGcodeInternal(sb.toString())
+                    }
+                    if (e.rotationDistance != null) {
+                        sendGcodeInternal(
+                            "SET_ROTATION_DISTANCE STEPPER=${e.stepperName} DISTANCE=${String.format(loc, "%.4f", e.rotationDistance)}"
+                        )
+                    }
+                }
+
+                // 2) In Config-Datei(en) persistieren
+                val sectionEdits = HashMap<String, MutableMap<String, String>>()
+                for (e in edits) {
+                    if (e.driverType.isNotBlank() && (e.runCurrent != null || e.holdCurrent != null)) {
+                        val m = sectionEdits.getOrPut("${e.driverType} ${e.stepperName}") { HashMap() }
+                        if (e.runCurrent != null) m["run_current"] = String.format(loc, "%.3f", e.runCurrent)
+                        if (e.holdCurrent != null) m["hold_current"] = String.format(loc, "%.3f", e.holdCurrent)
+                    }
+                    if (e.microsteps != null || e.rotationDistance != null) {
+                        val m = sectionEdits.getOrPut(e.stepperName) { HashMap() }
+                        if (e.microsteps != null) m["microsteps"] = e.microsteps.toString()
+                        if (e.rotationDistance != null) m["rotation_distance"] = String.format(loc, "%.4f", e.rotationDistance)
+                    }
+                }
+                if (sectionEdits.isNotEmpty()) {
+                    val files = listConfigFiles().filter { it.path.endsWith(".cfg", ignoreCase = true) }
+                    for (f in files) {
+                        val content = runCatching { readConfigFile(f.path) }.getOrNull() ?: continue
+                        val relevant = sectionEdits.keys.filter { content.contains("[$it]") }
+                        if (relevant.isEmpty()) continue
+                        val subset = relevant.associateWith { sectionEdits[it]!! }
+                        val (newContent, changed) = applyConfigEdits(content, subset)
+                        if (changed) saveConfigFile(f.path, newContent).getOrThrow()
+                    }
+                }
+
+                // 3) Neustart, falls microsteps/rotation_distance geändert (nur dann nötig –
+                // Ströme sind bereits live aktiv).
+                if (edits.any { it.needsRestart }) {
+                    runCatching {
+                        val req = Request.Builder()
+                            .url("$baseUrl/printer/firmware_restart")
+                            .post("".toRequestBody(null))
+                            .build()
+                        gcodeClient.newCall(req).execute().close()
+                    }
+                }
             }
         }
+
+    // Setzt key:value innerhalb der angegebenen Sektionen einer INI-artigen Klipper-Config.
+    // Vorhandene Schlüssel werden ersetzt (Einrückung bleibt erhalten), fehlende am
+    // Sektionsende ergänzt. Alle übrigen Zeilen bleiben unverändert.
+    private fun applyConfigEdits(
+        content: String,
+        edits: Map<String, Map<String, String>>
+    ): Pair<String, Boolean> {
+        val lines = content.split("\n")
+        val out = ArrayList<String>(lines.size + edits.size)
+        var changed = false
+        var remaining: MutableMap<String, String>? = null
+
+        fun flushRemaining() {
+            remaining?.let { rem ->
+                for ((k, v) in rem) {
+                    out.add("$k: $v")
+                    changed = true
+                }
+            }
+            remaining = null
+        }
+
+        for (line in lines) {
+            val trimmed = line.trim()
+            val header = if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                trimmed.removeSurrounding("[", "]").trim()
+            } else null
+
+            if (header != null) {
+                flushRemaining()
+                remaining = edits[header]?.toMutableMap()
+                out.add(line)
+                continue
+            }
+
+            val rem = remaining
+            if (rem != null && trimmed.isNotEmpty() && !trimmed.startsWith("#") && !trimmed.startsWith(";")) {
+                val sep = trimmed.indexOfFirst { it == ':' || it == '=' }
+                if (sep > 0) {
+                    val key = trimmed.substring(0, sep).trim()
+                    val newVal = rem.remove(key)
+                    if (newVal != null) {
+                        val indent = line.takeWhile { it == ' ' || it == '\t' }
+                        out.add("$indent$key: $newVal")
+                        changed = true
+                        continue
+                    }
+                }
+            }
+            out.add(line)
+        }
+        flushRemaining()
+        return out.joinToString("\n") to changed
+    }
 
     // Rohliste aller Klipper-Objekte (für die einmalige Erkennung dynamischer
     // Objektnamen wie extruder1, heater_generic X, temperature_sensor X, fan_generic X).

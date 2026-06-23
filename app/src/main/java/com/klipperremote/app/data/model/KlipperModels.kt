@@ -273,6 +273,21 @@ data class DriverSettings(
     val axes: List<AxisDriver> = emptyList()
 )
 
+// Zu speichernde Änderung einer Achse. Jedes Feld != null bedeutet "diesen Wert setzen".
+// runCurrent/holdCurrent werden live via SET_TMC_CURRENT angewendet, rotationDistance live
+// via SET_ROTATION_DISTANCE. Alle Werte werden zusätzlich in die Config geschrieben.
+// microsteps und rotationDistance erfordern einen FIRMWARE_RESTART, damit sie greifen.
+data class DriverEdit(
+    val stepperName: String,
+    val driverType: String = "",
+    val runCurrent: Float? = null,
+    val holdCurrent: Float? = null,
+    val microsteps: Int? = null,
+    val rotationDistance: Float? = null
+) {
+    val needsRestart: Boolean get() = microsteps != null || rotationDistance != null
+}
+
 // ── Routinen ───────────────────────────────────────────────────────────────────
 
 const val BLOCK_POWER  = "power"

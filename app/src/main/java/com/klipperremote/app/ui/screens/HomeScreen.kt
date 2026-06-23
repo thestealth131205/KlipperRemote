@@ -265,15 +265,23 @@ fun HomeScreen(
                             Box(modifier = Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator(color = AccentYellow, modifier = Modifier.size(36.dp))
                             }
-                        else ->
-                            TemperatureGrid(
-                                temps = uiState.temperatures,
-                                enabled = true,
-                                onSetTemp = { setTempTarget = it },
-                                temperatureHistory = uiState.temperatureHistory,
-                                tempGraphMinCelsius = uiState.appConfig.tempGraphMinCelsius,
-                                tempGraphMaxCelsius = uiState.appConfig.tempGraphMaxCelsius
-                            )
+                        else -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                TemperatureGrid(
+                                    temps = uiState.temperatures,
+                                    enabled = true,
+                                    onSetTemp = { setTempTarget = it }
+                                )
+                                if (uiState.temperatureHistory.isNotEmpty()) {
+                                    TempHistoryCard(
+                                        history = uiState.temperatureHistory,
+                                        minCelsius = uiState.appConfig.tempGraphMinCelsius,
+                                        maxCelsius = uiState.appConfig.tempGraphMaxCelsius,
+                                        modifier = Modifier.fillMaxWidth().height(150.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -772,14 +780,11 @@ fun SectionHeader(
 fun TemperatureGrid(
     temps: List<TemperatureInfo>,
     enabled: Boolean = true,
-    onSetTemp: (TemperatureInfo) -> Unit,
-    temperatureHistory: Map<String, List<Pair<Long, Float>>> = emptyMap(),
-    tempGraphMinCelsius: Int = 10,
-    tempGraphMaxCelsius: Int = 300
+    onSetTemp: (TemperatureInfo) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         val chunks = temps.chunked(2)
-        chunks.forEachIndexed { chunkIdx, pair ->
+        chunks.forEach { pair ->
             Row(
                 modifier = Modifier.height(IntrinsicSize.Min),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -792,15 +797,7 @@ fun TemperatureGrid(
                         onSetTemp = { onSetTemp(temp) }
                     )
                 }
-                // Last row with only one card → show temp history graph in 4th slot
-                if (pair.size == 1 && chunkIdx == chunks.lastIndex && temperatureHistory.isNotEmpty()) {
-                    TempHistoryCard(
-                        history = temperatureHistory,
-                        minCelsius = tempGraphMinCelsius,
-                        maxCelsius = tempGraphMaxCelsius,
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                    )
-                } else if (pair.size == 1) {
+                if (pair.size == 1) {
                     Spacer(modifier = Modifier.weight(1f))
                 }
             }

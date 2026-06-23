@@ -14,6 +14,7 @@ import com.klipperremote.app.data.model.ConfigFile
 import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.DriverSettings
+import com.klipperremote.app.data.model.DriverEdit
 import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
@@ -660,10 +661,10 @@ class KlipperRepository @Inject constructor(
         return runCatching { KlipperClient(config).getDriverSettings() }
     }
 
-    suspend fun setDriverCurrent(stepperName: String, runCurrent: Float, holdCurrent: Float?): Result<Unit> {
+    suspend fun applyDriverSettings(edits: List<DriverEdit>): Result<Unit> {
         val config = configFlow.first()
         if (config.host.isBlank()) return Result.failure(IllegalStateException("Kein Host konfiguriert"))
-        return KlipperClient(config).setDriverCurrent(stepperName, runCurrent, holdCurrent)
+        return KlipperClient(config).applyDriverSettings(edits)
     }
 
     suspend fun getTuningData(): Result<TuningData> {

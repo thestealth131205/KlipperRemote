@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.klipperremote.app.data.model.AxisDriver
+import com.klipperremote.app.data.model.DriverEdit
 import com.klipperremote.app.viewmodel.MainViewModel
 
 private val Accent = Color(0xFFE8FF00)
@@ -40,12 +41,18 @@ fun DriverSettingsScreen(
     // Lokale Bearbeitungs-Zustände je Achse, initialisiert aus den geladenen Werten
     val runFields = remember { mutableStateMapOf<String, String>() }
     val holdFields = remember { mutableStateMapOf<String, String>() }
+    val microstepFields = remember { mutableStateMapOf<String, String>() }
+    val rotationFields = remember { mutableStateMapOf<String, String>() }
     LaunchedEffect(uiState.driverSettings) {
         uiState.driverSettings.axes.forEach { axis ->
             runFields[axis.stepperName] = axis.runCurrent?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: ""
             holdFields[axis.stepperName] = axis.holdCurrent?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: ""
+            microstepFields[axis.stepperName] = axis.microsteps?.toString() ?: ""
+            rotationFields[axis.stepperName] = axis.rotationDistance?.let { String.format(java.util.Locale.US, "%.3f", it) } ?: ""
         }
     }
+
+    var showRestartConfirm by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = Color(0xFF121212),
@@ -84,9 +91,10 @@ fun DriverSettingsScreen(
                     ) {
                         item {
                             Text(
-                                "Lauf- und Halte-Strom werden sofort angewendet (SET_TMC_CURRENT). " +
-                                    "Microsteps und Rotation-Distance sind nur zur Info – Änderungen " +
-                                    "erfordern eine Konfigurationsbearbeitung und Firmware-Neustart.",
+                                "Lauf- und Halte-Strom werden sofort angewendet (SET_TMC_CURRENT) und " +
+                                    "in die Config geschrieben. Microsteps und Rotation-Distance werden " +
+                                    "ebenfalls in die Config geschrieben; ihre Änderung erfordert einen " +
+                                    "FIRMWARE_RESTART, der dann automatisch ausgelöst wird.",
                                 color = Color(0xFF888888),
                                 fontSize = 11.sp
                             )
@@ -96,8 +104,12 @@ fun DriverSettingsScreen(
                                 axis = axis,
                                 runValue = runFields[axis.stepperName] ?: "",
                                 holdValue = holdFields[axis.stepperName] ?: "",
+                                microstepValue = microstepFields[axis.stepperName] ?: "",
+                                rotationValue = rotationFields[axis.stepperName] ?: "",
                                 onRunChange = { runFields[axis.stepperName] = it },
-                                onHoldChange = { holdFields[axis.stepperName] = it }
+                                onHoldChange = { holdFields[axis.stepperName] = it },
+                                onMicrostepChange = { microstepFields[axis.stepperName] = it },
+                                onRotationChange = { rotationFields[axis.stepperName] = it }
                             )
                         }
                         item {
@@ -107,18 +119,12 @@ fun DriverSettingsScreen(
                             Spacer(Modifier.height(4.dp))
                             Button(
                                 onClick = {
-                                    val edits = buildMap<String, Pair<Float, Float?>> {
-                                        uiState.driverSettings.axes.forEach { axis ->
-                                            val run = runFields[axis.stepperName]
-                                                ?.replace(',', '.')?.trim()?.toFloatOrNull()
-                                            if (run != null) {
-                                                val hold = holdFields[axis.stepperName]
-                                                    ?.replace(',', '.')?.trim()?.toFloatOrNull()
-                                                put(axis.stepperName, run to hold)
-                                            }
-                                        }
-                                    }
-                                    viewModel.saveDriverSettings(edits)
+                                    val edits = buildDriverEdits(
+                                        uiState.driverSettings.axes,
+                                        runFields, holdFields, microstepFields, rotationFields
+                                    )
+                                    if (edits.any { it.needsRestart }) showRestartConfirm = true
+                                    else viewModel.saveDriverSettings(edits)
                                 },
                                 enabled = !uiState.driverSettingsSaving,
                                 modifier = Modifier.fillMaxWidth(),
@@ -137,8 +143,70 @@ fun DriverSettingsScreen(
                     }
                 }
             }
+
+            if (showRestartConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showRestartConfirm = false },
+                    containerColor = Color(0xFF1E1E1E),
+                    title = { Text("Firmware-Neustart nötig", color = Color(0xFFEEEEEE)) },
+                    text = {
+                        Text(
+                            "Änderungen an Microsteps oder Rotation-Distance greifen erst nach einem " +
+                                "FIRMWARE_RESTART. Dieser wird nach dem Speichern automatisch ausgelöst und " +
+                                "unterbricht einen laufenden Druck. Fortfahren?",
+                            color = Color(0xFFBBBBBB),
+                            fontSize = 13.sp
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showRestartConfirm = false
+                            viewModel.saveDriverSettings(
+                                buildDriverEdits(
+                                    uiState.driverSettings.axes,
+                                    runFields, holdFields, microstepFields, rotationFields
+                                )
+                            )
+                        }) { Text("Speichern & Neustart", color = Accent) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRestartConfirm = false }) {
+                            Text("Abbrechen", color = Color(0xFF888888))
+                        }
+                    }
+                )
+            }
         }
     }
+}
+
+// Baut die Liste der tatsächlich geänderten Achsen-Werte (nur abweichende Felder werden gesetzt).
+private fun buildDriverEdits(
+    axes: List<AxisDriver>,
+    runFields: Map<String, String>,
+    holdFields: Map<String, String>,
+    microstepFields: Map<String, String>,
+    rotationFields: Map<String, String>
+): List<DriverEdit> = axes.mapNotNull { axis ->
+    val name = axis.stepperName
+    val run = runFields[name]?.replace(',', '.')?.trim()?.toFloatOrNull()
+        ?.takeIf { axis.runCurrent == null || kotlin.math.abs(it - axis.runCurrent) > 0.0001f }
+    val hold = holdFields[name]?.replace(',', '.')?.trim()?.toFloatOrNull()
+        ?.takeIf { axis.holdCurrent == null || kotlin.math.abs(it - axis.holdCurrent) > 0.0001f }
+    val micro = microstepFields[name]?.trim()?.toIntOrNull()
+        ?.takeIf { it > 0 && it != axis.microsteps }
+    val rot = rotationFields[name]?.replace(',', '.')?.trim()?.toFloatOrNull()
+        ?.takeIf { it > 0f && (axis.rotationDistance == null || kotlin.math.abs(it - axis.rotationDistance) > 0.0001f) }
+
+    if (run == null && hold == null && micro == null && rot == null) null
+    else DriverEdit(
+        stepperName = name,
+        driverType = axis.driverType,
+        runCurrent = run,
+        holdCurrent = hold,
+        microsteps = micro,
+        rotationDistance = rot
+    )
 }
 
 @Composable
@@ -146,8 +214,12 @@ private fun AxisDriverCard(
     axis: AxisDriver,
     runValue: String,
     holdValue: String,
+    microstepValue: String,
+    rotationValue: String,
     onRunChange: (String) -> Unit,
-    onHoldChange: (String) -> Unit
+    onHoldChange: (String) -> Unit,
+    onMicrostepChange: (String) -> Unit,
+    onRotationChange: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -197,9 +269,22 @@ private fun AxisDriverCard(
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            InfoValue("Microsteps", axis.microsteps?.toString() ?: "–")
-            InfoValue("Rotation-Distance", axis.rotationDistance?.let { String.format(java.util.Locale.US, "%.3f mm", it) } ?: "–")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CurrentField(
+                label = "Microsteps",
+                value = microstepValue,
+                enabled = true,
+                decimal = false,
+                onChange = onMicrostepChange,
+                modifier = Modifier.weight(1f)
+            )
+            CurrentField(
+                label = "Rotation-Distance (mm)",
+                value = rotationValue,
+                enabled = true,
+                onChange = onRotationChange,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
@@ -210,7 +295,8 @@ private fun CurrentField(
     value: String,
     enabled: Boolean,
     onChange: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    decimal: Boolean = true
 ) {
     OutlinedTextField(
         value = value,
@@ -218,7 +304,9 @@ private fun CurrentField(
         label = { Text(label, fontSize = 12.sp) },
         enabled = enabled,
         singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number
+        ),
         modifier = modifier,
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = Accent,
@@ -233,12 +321,4 @@ private fun CurrentField(
             disabledLabelColor = Color(0xFF666666)
         )
     )
-}
-
-@Composable
-private fun InfoValue(label: String, value: String) {
-    Column {
-        Text(label, color = Color(0xFF888888), fontSize = 10.sp)
-        Text(value, color = Color(0xFFCCCCCC), fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-    }
 }
