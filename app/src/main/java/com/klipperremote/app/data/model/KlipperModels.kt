@@ -101,7 +101,9 @@ data class WebcamConfig(
     val iceUsername: String = "",
     val icePassword: String = "",
     // Separater Webcam-Port (0 = Moonraker-Port als Fallback)
-    val webcamPort: Int = 0
+    val webcamPort: Int = 0,
+    // Ob der Moonraker-API-Key als ?apikey= an die Webcam-URLs angehängt wird
+    val appendApiToken: Boolean = true
 ) {
     /** Effektiver Port: webcamPort wenn gesetzt, sonst Moonraker-Port */
     private fun effectivePort(moonrakerPort: Int) = if (webcamPort > 0) webcamPort else moonrakerPort
@@ -109,25 +111,26 @@ data class WebcamConfig(
     fun resolveSnapshotUrl(host: String, moonrakerPort: Int = 7125, apiKey: String = ""): String {
         val snap = snapshotUrl.ifBlank { return "" }
         val ePort = effectivePort(moonrakerPort)
-        val keyParam = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
+        val effectiveKey = if (appendApiToken) apiKey else ""
+        val keyParam = if (effectiveKey.isNotBlank()) "?apikey=$effectiveKey" else ""
         return if (snap.startsWith("/")) {
             "http://$host:$ePort$snap$keyParam"
         } else {
-            if (apiKey.isNotBlank()) "$snap?apikey=$apiKey" else snap
+            if (effectiveKey.isNotBlank()) "$snap?apikey=$effectiveKey" else snap
         }
     }
 
     fun resolveStreamUrl(host: String, moonrakerPort: Int = 7125, apiKey: String = ""): String {
         val ePort = effectivePort(moonrakerPort)
-        val keyParam = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
+        val effectiveKey = if (appendApiToken) apiKey else ""
+        val keyParam = if (effectiveKey.isNotBlank()) "?apikey=$effectiveKey" else ""
         if (customUrl.isNotBlank()) {
             return if (customUrl.startsWith("/")) {
                 // Relativer Pfad → host:effectivePort + Pfad + API-Key
-                val relKeyParam = if (apiKey.isNotBlank()) "?apikey=$apiKey" else ""
-                "http://$host:$ePort$customUrl$relKeyParam"
+                "http://$host:$ePort$customUrl$keyParam"
             } else {
                 // Absolute URL (Rückwärtskompatibilität) → unverändert + API-Key
-                if (apiKey.isNotBlank()) "$customUrl?apikey=$apiKey" else customUrl
+                if (effectiveKey.isNotBlank()) "$customUrl?apikey=$effectiveKey" else customUrl
             }
         }
         if (host.isBlank()) return ""

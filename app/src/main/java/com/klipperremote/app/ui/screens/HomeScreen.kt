@@ -3288,6 +3288,7 @@ fun WebcamSettingsDialog(
     var selectedRotate by remember { mutableStateOf(current.rotate) }
     var flipH by remember { mutableStateOf(current.flipH) }
     var flipV by remember { mutableStateOf(current.flipV) }
+    var appendApiToken by remember { mutableStateOf(current.appendApiToken) }
     var serviceExpanded by remember { mutableStateOf(false) }
     var rotateExpanded by remember { mutableStateOf(false) }
 
@@ -3398,7 +3399,7 @@ fun WebcamSettingsDialog(
                 // Vorschau der resultierenden URLs (Stream + Snapshot)
                 val resolvedPort = webcamPort.toIntOrNull()?.takeIf { it > 0 } ?: uiState.config.port
                 val resolvedHost = uiState.config.host
-                val resolvedKey = uiState.config.apiKey
+                val resolvedKey = if (appendApiToken) uiState.config.apiKey else ""
                 fun buildPreviewUrl(path: String): String {
                     if (resolvedHost.isBlank() || path.isBlank()) return ""
                     val keyPart = if (resolvedKey.isNotBlank()) "?apikey=$resolvedKey" else ""
@@ -3518,6 +3519,20 @@ fun WebcamSettingsDialog(
                         Text("vertikal", color = OnSurface, fontSize = 13.sp)
                     }
                 }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { appendApiToken = !appendApiToken }
+                ) {
+                    Checkbox(
+                        checked = appendApiToken,
+                        onCheckedChange = { appendApiToken = it },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = AccentYellow,
+                            checkmarkColor = Color.Black
+                        )
+                    )
+                    Text("API-Token an Webcam-URL anhängen", color = OnSurface, fontSize = 13.sp)
+                }
             }
         },
         confirmButton = {
@@ -3533,7 +3548,8 @@ fun WebcamSettingsDialog(
                             rotate = selectedRotate,
                             flipH = flipH,
                             flipV = flipV,
-                            webcamPort = webcamPort.toIntOrNull() ?: 0
+                            webcamPort = webcamPort.toIntOrNull() ?: 0,
+                            appendApiToken = appendApiToken
                         )
                     )
                 },

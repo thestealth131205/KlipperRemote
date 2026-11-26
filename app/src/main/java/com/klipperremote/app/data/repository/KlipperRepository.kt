@@ -379,6 +379,7 @@ class KlipperRepository @Inject constructor(
         put("iceUsername", w.iceUsername)
         put("icePassword", w.icePassword)
         put("webcamPort", w.webcamPort)
+        put("appendApiToken", w.appendApiToken)
     }
 
     private fun webcamFromJson(o: JSONObject): WebcamConfig = WebcamConfig(
@@ -394,7 +395,8 @@ class KlipperRepository @Inject constructor(
         stunServer = o.optString("stunServer", "stun:stun.l.google.com:19302"),
         iceUsername = o.optString("iceUsername", ""),
         icePassword = o.optString("icePassword", ""),
-        webcamPort = o.optInt("webcamPort", 0)
+        webcamPort = o.optInt("webcamPort", 0),
+        appendApiToken = o.optBoolean("appendApiToken", true)
     )
 
     suspend fun saveFavoriteMacros(favorites: List<String>) {
