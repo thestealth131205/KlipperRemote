@@ -92,6 +92,7 @@ class KlipperRepository @Inject constructor(
     @Volatile private var cachedHeaterKeys: List<String>? = null
     @Volatile private var cachedFanGenericKeys: List<String>? = null
     @Volatile private var cachedHasFan: Boolean = false
+    @Volatile private var cachedHasMmu: Boolean = false
 
     // ── WebSocket (Moonraker async push) ─────────────────────────────────────
     @Volatile private var wsClient: MoonrakerWsClient? = null
@@ -185,6 +186,7 @@ class KlipperRepository @Inject constructor(
         cachedHeaterKeys = null
         cachedFanGenericKeys = null
         cachedHasFan = false
+        cachedHasMmu = false
         dataStore.edit { prefs ->
             val list = decodeProfiles(prefs).toMutableList()
             val selId = prefs[KEY_SELECTED_PRINTER]
@@ -231,7 +233,7 @@ class KlipperRepository @Inject constructor(
         name: String, host: String, port: Int, apiKey: String,
         username: String = "", password: String = ""
     ): String {
-        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false
+        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false; cachedHasMmu = false
         val id = java.util.UUID.randomUUID().toString()
         dataStore.edit { prefs ->
             val list = decodeProfiles(prefs).toMutableList()
@@ -245,7 +247,7 @@ class KlipperRepository @Inject constructor(
 
     /** Aktualisiert ein bestehendes Drucker-Profil (Name/Verbindung/Webcams). */
     suspend fun updatePrinter(profile: PrinterProfile) {
-        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false
+        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false; cachedHasMmu = false
         dataStore.edit { prefs ->
             val list = decodeProfiles(prefs).toMutableList()
             val idx = list.indexOfFirst { it.id == profile.id }
@@ -258,7 +260,7 @@ class KlipperRepository @Inject constructor(
 
     /** Entfernt einen Drucker; wählt ggf. einen anderen aus. */
     suspend fun deletePrinter(id: String) {
-        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false
+        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false; cachedHasMmu = false
         dataStore.edit { prefs ->
             val list = decodeProfiles(prefs).toMutableList()
             list.removeAll { it.id == id }
@@ -271,7 +273,7 @@ class KlipperRepository @Inject constructor(
 
     /** Wechselt den aktiven Drucker (löst WebSocket-Reconnect aus). */
     suspend fun selectPrinter(id: String) {
-        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false
+        cachedHeaterKeys = null; cachedFanGenericKeys = null; cachedHasFan = false; cachedHasMmu = false
         dataStore.edit { prefs -> prefs[KEY_SELECTED_PRINTER] = id }
     }
 
@@ -443,10 +445,11 @@ class KlipperRepository @Inject constructor(
                     }
                     cachedFanGenericKeys = objs.filter { it.startsWith("fan_generic ") }
                     cachedHasFan = objs.contains("fan")
+                    cachedHasMmu = objs.contains("mmu")
                 }
             }
             val heaterKeys = cachedHeaterKeys ?: error("Objektliste nicht verfügbar")
-            client.getPrinterSnapshot(heaterKeys, cachedFanGenericKeys ?: emptyList(), cachedHasFan)
+            client.getPrinterSnapshot(heaterKeys, cachedFanGenericKeys ?: emptyList(), cachedHasFan, cachedHasMmu)
         }
     }
 

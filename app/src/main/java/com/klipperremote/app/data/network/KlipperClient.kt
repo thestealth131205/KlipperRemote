@@ -12,6 +12,9 @@ import com.klipperremote.app.data.model.DriverSettings
 import com.klipperremote.app.data.model.DriverEdit
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
+import com.klipperremote.app.data.model.MmuData
+import com.klipperremote.app.data.model.MmuDryerInfo
+import com.klipperremote.app.data.model.MmuGateInfo
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
@@ -1099,7 +1102,8 @@ class KlipperClient(private val config: KlipperConfig) {
     suspend fun getPrinterSnapshot(
         heaterKeys: List<String>,
         fanGenericKeys: List<String>,
-        includeFan: Boolean
+        includeFan: Boolean,
+        includeMmu: Boolean = false
     ): PrinterSnapshot = withContext(Dispatchers.IO) {
         fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
         val sb = StringBuilder(
@@ -1110,6 +1114,7 @@ class KlipperClient(private val config: KlipperConfig) {
         // Das [fan]-Objekt (Bauteilkühlung) ist optional – nur abfragen, wenn es laut
         // Objektliste existiert. Sonst lehnt Moonraker die GESAMTE Query mit HTTP 400 ab.
         if (includeFan) sb.append("&fan=speed")
+        if (includeMmu) sb.append("&mmu=&mmu_machine=")
         heaterKeys.forEach { sb.append("&").append(enc(it)).append("=") }
         fanGenericKeys.forEach { sb.append("&").append(enc(it)).append("=speed") }
 
@@ -1222,6 +1227,8 @@ class KlipperClient(private val config: KlipperConfig) {
             fans = fans
         )
 
+        val mmuData = if (includeMmu) parseMmuData(status) else MmuData()
+
         PrinterSnapshot(
             temperatures = temps.sortedBy { it.name },
             printerState = mapped,
@@ -1230,7 +1237,41 @@ class KlipperClient(private val config: KlipperConfig) {
             printProgress = progress,
             printSpeedMmPerSec = speedMmS,
             printStats = stats,
-            tuningData = tuning
+            tuningData = tuning,
+            mmuData = mmuData
+        )
+    }
+
+    // Multi-Filament-Status (z. B. Anycubic ACE) aus den Klipper-Objekten "mmu"/"mmu_machine" parsen
+    private fun parseMmuData(status: JSONObject): MmuData {
+        val mmu = status.optJSONObject("mmu") ?: return MmuData()
+        val names = mmu.optJSONArray("gate_filament_name")
+        val materials = mmu.optJSONArray("gate_material")
+        val colors = mmu.optJSONArray("gate_color")
+        val temps = mmu.optJSONArray("gate_temperature")
+        val gateCount = names?.length() ?: materials?.length() ?: 0
+        val gates = (0 until gateCount).map { i ->
+            MmuGateInfo(
+                index = i,
+                filamentName = names?.optString(i, "") ?: "",
+                material = materials?.optString(i, "") ?: "",
+                colorHex = colors?.optString(i, "") ?: "",
+                temperature = temps?.optInt(i, 0) ?: 0
+            )
+        }
+        val unit0 = status.optJSONObject("mmu_machine")?.optJSONObject("unit_0")
+        val dryer = MmuDryerInfo(
+            status = unit0?.optString("dryer_status", "stop") ?: "stop",
+            currentTemp = unit0?.optInt("dryer_temp", 0) ?: 0,
+            targetTemp = unit0?.optInt("dryer_target_temp", 0) ?: 0,
+            remainingMinutes = unit0?.optInt("dryer_remaining", 0) ?: 0,
+            humidity = unit0?.optInt("dryer_humidity", 0) ?: 0
+        )
+        return MmuData(
+            available = true,
+            activeGate = mmu.optInt("gate", -1),
+            gates = gates,
+            dryer = dryer
         )
     }
 

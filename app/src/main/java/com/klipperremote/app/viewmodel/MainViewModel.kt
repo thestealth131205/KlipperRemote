@@ -21,6 +21,7 @@ import com.klipperremote.app.data.model.GCodeSegment
 import com.klipperremote.app.data.model.GcodeMetadata
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
+import com.klipperremote.app.data.model.MmuData
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
@@ -111,6 +112,8 @@ data class MainUiState(
     val printStats: PrintStats? = null,
     // Tuning-Daten
     val tuningData: TuningData = TuningData(),
+    // Multi-Filament-Status (z. B. Anycubic ACE)
+    val mmuData: MmuData = MmuData(),
     // Konsole (Moonraker gcode_store)
     val consoleEntries: List<ConsoleEntry> = emptyList(),
     val consoleLoading: Boolean = false,
@@ -507,7 +510,8 @@ class MainViewModel @Inject constructor(
                             printProgress      = snap.printProgress,
                             printSpeedMmPerSec = snap.printSpeedMmPerSec,
                             printStats         = snap.printStats,
-                            tuningData         = snap.tuningData
+                            tuningData         = snap.tuningData,
+                            mmuData            = snap.mmuData
                         )
                     }
                     updateTempHistory(snap.temperatures)
@@ -657,7 +661,8 @@ class MainViewModel @Inject constructor(
                         printProgress = snap.printProgress,
                         printSpeedMmPerSec = snap.printSpeedMmPerSec,
                         printStats = snap.printStats,
-                        tuningData = snap.tuningData
+                        tuningData = snap.tuningData,
+                        mmuData = snap.mmuData
                     )
                 }
                 updateTempHistory(snap.temperatures)

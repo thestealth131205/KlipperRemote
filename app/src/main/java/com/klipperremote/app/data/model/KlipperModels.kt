@@ -108,37 +108,49 @@ data class WebcamConfig(
     /** Effektiver Port: webcamPort wenn gesetzt, sonst Moonraker-Port */
     private fun effectivePort(moonrakerPort: Int) = if (webcamPort > 0) webcamPort else moonrakerPort
 
+    /** Hängt den API-Key mit dem richtigen Separator an (? falls noch keine Query vorhanden, sonst &) */
+    private fun appendKey(url: String, apiKey: String): String {
+        if (apiKey.isBlank()) return url
+        val separator = if (url.contains("?")) "&" else "?"
+        return "$url${separator}apikey=$apiKey"
+    }
+
+    /** Normalisiert einen Nutzer-Pfad: alles außer einer vollen http(s)-URL bekommt ein führendes "/" */
+    private fun normalizePath(path: String): String {
+        if (path.startsWith("http://") || path.startsWith("https://")) return path
+        return if (path.startsWith("/")) path else "/$path"
+    }
+
     fun resolveSnapshotUrl(host: String, moonrakerPort: Int = 7125, apiKey: String = ""): String {
-        val snap = snapshotUrl.ifBlank { return "" }
+        val snap = normalizePath(snapshotUrl.ifBlank { return "" })
         val ePort = effectivePort(moonrakerPort)
         val effectiveKey = if (appendApiToken) apiKey else ""
-        val keyParam = if (effectiveKey.isNotBlank()) "?apikey=$effectiveKey" else ""
         return if (snap.startsWith("/")) {
-            "http://$host:$ePort$snap$keyParam"
+            appendKey("http://$host:$ePort$snap", effectiveKey)
         } else {
-            if (effectiveKey.isNotBlank()) "$snap?apikey=$effectiveKey" else snap
+            appendKey(snap, effectiveKey)
         }
     }
 
     fun resolveStreamUrl(host: String, moonrakerPort: Int = 7125, apiKey: String = ""): String {
         val ePort = effectivePort(moonrakerPort)
         val effectiveKey = if (appendApiToken) apiKey else ""
-        val keyParam = if (effectiveKey.isNotBlank()) "?apikey=$effectiveKey" else ""
         if (customUrl.isNotBlank()) {
-            return if (customUrl.startsWith("/")) {
+            val normalized = normalizePath(customUrl)
+            return if (normalized.startsWith("/")) {
                 // Relativer Pfad → host:effectivePort + Pfad + API-Key
-                "http://$host:$ePort$customUrl$keyParam"
+                appendKey("http://$host:$ePort$normalized", effectiveKey)
             } else {
                 // Absolute URL (Rückwärtskompatibilität) → unverändert + API-Key
-                if (effectiveKey.isNotBlank()) "$customUrl?apikey=$effectiveKey" else customUrl
+                appendKey(normalized, effectiveKey)
             }
         }
         if (host.isBlank()) return ""
         return when (streamType) {
-            WebcamStreamType.MJPEG -> "http://$host:$ePort/webcam/stream$keyParam"
-            WebcamStreamType.WEBRTC -> "http://$host:$ePort/webcam/webrtc$keyParam"
-            WebcamStreamType.HLS -> "http://$host:$ePort/webcam/hls/stream.m3u8$keyParam"
-            WebcamStreamType.CAMERA_STREAMER -> "http://$host:$ePort/webcam/stream$keyParam"
+            WebcamStreamType.MJPEG -> appendKey("http://$host:$ePort/webcam/stream", effectiveKey)
+            WebcamStreamType.WEBRTC -> appendKey("http://$host:$ePort/webcam/webrtc", effectiveKey)
+            WebcamStreamType.HLS -> appendKey("http://$host:$ePort/webcam/hls/stream.m3u8", effectiveKey)
+            WebcamStreamType.CAMERA_STREAMER -> appendKey("http://$host:$ePort/webcam/stream", effectiveKey)
         }
     }
 }
@@ -239,7 +251,8 @@ data class PrinterSnapshot(
     val printProgress: Float? = null,
     val printSpeedMmPerSec: Float? = null,
     val printStats: PrintStats? = null,
-    val tuningData: TuningData = TuningData()
+    val tuningData: TuningData = TuningData(),
+    val mmuData: MmuData = MmuData()
 )
 
 data class ConsoleEntry(
@@ -259,6 +272,32 @@ data class TuningData(
     val extrudeFactor: Int = 100,
     val partCoolingFan: Int = 0,
     val fans: List<FanInfo> = emptyList()
+)
+
+// Ein einzelnes Gate (Spule) eines Multi-Filament-Systems (z. B. Anycubic ACE)
+data class MmuGateInfo(
+    val index: Int,
+    val filamentName: String = "",
+    val material: String = "",
+    val colorHex: String = "",  // "RRGGBBAA" (Klipper-mmu-Format) oder leer wenn unbekannt
+    val temperature: Int = 0    // empfohlene Drucktemperatur in °C
+)
+
+// Status des Trockners einer Multi-Filament-Einheit (z. B. Anycubic ACE)
+data class MmuDryerInfo(
+    val status: String = "stop",   // "stop" | "drying" | "heater_err"
+    val currentTemp: Int = 0,
+    val targetTemp: Int = 0,
+    val remainingMinutes: Int = 0,
+    val humidity: Int = 0
+)
+
+// Gebündelter Status eines Multi-Filament-Systems (MMU, z. B. Anycubic ACE mit 4 Gates)
+data class MmuData(
+    val available: Boolean = false,
+    val activeGate: Int = -1,
+    val gates: List<MmuGateInfo> = emptyList(),
+    val dryer: MmuDryerInfo = MmuDryerInfo()
 )
 
 // Treiber-Einstellungen einer Achse (aus Klipper configfile-Settings gelesen)

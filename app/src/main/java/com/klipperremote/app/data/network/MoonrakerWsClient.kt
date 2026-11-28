@@ -3,6 +3,9 @@ package com.klipperremote.app.data.network
 import com.klipperremote.app.data.model.FanInfo
 import com.klipperremote.app.data.model.KlipperConfig
 import com.klipperremote.app.data.model.KlipperPosition
+import com.klipperremote.app.data.model.MmuData
+import com.klipperremote.app.data.model.MmuDryerInfo
+import com.klipperremote.app.data.model.MmuGateInfo
 import com.klipperremote.app.data.model.PrintStats
 import com.klipperremote.app.data.model.PrinterSnapshot
 import com.klipperremote.app.data.model.TemperatureInfo
@@ -69,6 +72,7 @@ class MoonrakerWsClient(
     private var heaterKeys: List<String> = emptyList()
     private var fanGenericKeys: List<String> = emptyList()
     private var hasFan = false
+    private var hasMmu = false
 
     /** Letzter geparster Drucker-Status. null solange noch keine Daten empfangen. */
     private val _snapshot = MutableStateFlow<PrinterSnapshot?>(null)
@@ -184,6 +188,7 @@ class MoonrakerWsClient(
                 }
                 fanGenericKeys = objs.filter { it.startsWith("fan_generic ") }
                 hasFan = objs.contains("fan")
+                hasMmu = objs.contains("mmu")
             }
             subscribeObjects()
         } catch (_: Exception) {
@@ -197,6 +202,10 @@ class MoonrakerWsClient(
         listOf("print_stats", "toolhead", "virtual_sdcard", "gcode_move", "motion_report")
             .forEach { objects.put(it, JSONObject.NULL) }
         if (hasFan) objects.put("fan", JSONObject.NULL)
+        if (hasMmu) {
+            objects.put("mmu", JSONObject.NULL)
+            objects.put("mmu_machine", JSONObject.NULL)
+        }
         heaterKeys.forEach { objects.put(it, JSONObject.NULL) }
         fanGenericKeys.forEach { objects.put(it, JSONObject.NULL) }
 
@@ -346,6 +355,8 @@ class MoonrakerWsClient(
             FanInfo(keyName = keyName, displayName = displayName, speedPercent = (speed * 100).toInt())
         }
 
+        val mmuData = if (hasMmu) parseMmuData(status) else MmuData()
+
         return PrinterSnapshot(
             temperatures      = temps.sortedBy { it.name },
             printerState      = mapped,
@@ -359,7 +370,41 @@ class MoonrakerWsClient(
                 extrudeFactor   = extrudeFactor,
                 partCoolingFan  = partFan,
                 fans            = fans
+            ),
+            mmuData           = mmuData
+        )
+    }
+
+    // Multi-Filament-Status (z. B. Anycubic ACE) aus den Klipper-Objekten "mmu"/"mmu_machine" parsen
+    private fun parseMmuData(status: JSONObject): MmuData {
+        val mmu = status.optJSONObject("mmu") ?: return MmuData()
+        val names = mmu.optJSONArray("gate_filament_name")
+        val materials = mmu.optJSONArray("gate_material")
+        val colors = mmu.optJSONArray("gate_color")
+        val gateTemps = mmu.optJSONArray("gate_temperature")
+        val gateCount = names?.length() ?: materials?.length() ?: 0
+        val gates = (0 until gateCount).map { i ->
+            MmuGateInfo(
+                index = i,
+                filamentName = names?.optString(i, "") ?: "",
+                material = materials?.optString(i, "") ?: "",
+                colorHex = colors?.optString(i, "") ?: "",
+                temperature = gateTemps?.optInt(i, 0) ?: 0
             )
+        }
+        val unit0 = status.optJSONObject("mmu_machine")?.optJSONObject("unit_0")
+        val dryer = MmuDryerInfo(
+            status = unit0?.optString("dryer_status", "stop") ?: "stop",
+            currentTemp = unit0?.optInt("dryer_temp", 0) ?: 0,
+            targetTemp = unit0?.optInt("dryer_target_temp", 0) ?: 0,
+            remainingMinutes = unit0?.optInt("dryer_remaining", 0) ?: 0,
+            humidity = unit0?.optInt("dryer_humidity", 0) ?: 0
+        )
+        return MmuData(
+            available = true,
+            activeGate = mmu.optInt("gate", -1),
+            gates = gates,
+            dryer = dryer
         )
     }
 }

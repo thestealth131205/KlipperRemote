@@ -6,6 +6,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -64,6 +65,9 @@ import com.klipperremote.app.data.model.ConsoleEntry
 import com.klipperremote.app.data.model.CrownestCam
 import com.klipperremote.app.data.model.FanInfo
 import com.klipperremote.app.data.model.KlipperPosition
+import com.klipperremote.app.data.model.MmuData
+import com.klipperremote.app.data.model.MmuDryerInfo
+import com.klipperremote.app.data.model.MmuGateInfo
 import com.klipperremote.app.data.model.PowerDevice
 import com.klipperremote.app.data.model.PrintFile
 import com.klipperremote.app.data.model.PrintStats
@@ -341,7 +345,14 @@ fun HomeScreen(
                         routines = uiState.routines,
                         onRunRoutine = { viewModel.executeRoutine(it) },
                         onEditRoutine = { onNavigateToRoutineEditor(it) },
-                        onCreateRoutine = { onNavigateToRoutineEditor(null) }
+                        onCreateRoutine = { onNavigateToRoutineEditor(null) },
+                        mmuData = uiState.mmuData,
+                        onMmuLoad = { gate -> viewModel.sendGcode("MMU_LOAD GATE=$gate") },
+                        onMmuUnload = { gate -> viewModel.sendGcode("MMU_UNLOAD GATE=$gate") },
+                        onMmuDryerStart = { temp, minutes ->
+                            viewModel.sendGcode("MMU_DRYER_START UNIT=0 DURATION=$minutes TEMP=$temp")
+                        },
+                        onMmuDryerStop = { viewModel.sendGcode("MMU_DRYER_STOP UNIT=0") }
                     )
                 }
 
@@ -1686,7 +1697,12 @@ fun BewegungsSection(
     routines: List<RoutineData> = emptyList(),
     onRunRoutine: (RoutineData) -> Unit = {},
     onEditRoutine: (String) -> Unit = {},
-    onCreateRoutine: () -> Unit = {}
+    onCreateRoutine: () -> Unit = {},
+    mmuData: MmuData = MmuData(),
+    onMmuLoad: (Int) -> Unit = {},
+    onMmuUnload: (Int) -> Unit = {},
+    onMmuDryerStart: (Int, Int) -> Unit = { _, _ -> },
+    onMmuDryerStop: () -> Unit = {}
 ) {
     var stepMm by remember { mutableStateOf(10f) }
     val stepOptions = listOf(0.1f, 1f, 10f, 50f)
@@ -1740,6 +1756,18 @@ fun BewegungsSection(
             onHomeAll = { onHome("") },
             onMoveToXyz = onMoveToXyz
         )
+
+        // ── Multi-Filament sub-section (z. B. Anycubic ACE) ─────────────────────
+        if (mmuData.available) {
+            MultiFilamentSection(
+                mmuData = mmuData,
+                enabled = enabled,
+                onLoad = onMmuLoad,
+                onUnload = onMmuUnload,
+                onDryerStart = onMmuDryerStart,
+                onDryerStop = onMmuDryerStop
+            )
+        }
 
         // ── Routinen sub-section ───────────────────────────────────────────────
         Row(
@@ -1800,6 +1828,267 @@ fun BewegungsSection(
             )
         }
     }
+}
+
+// ── Multi-Filament (MMU / ACE) section ──────────────────────────────────────────
+
+/** Parst Klipper-mmu-Farbwerte ("RRGGBBAA") in eine Compose-Farbe. Fällt bei Unbekanntem auf Grau zurück. */
+private fun parseMmuGateColor(hex: String): Color {
+    if (hex.length != 8) return Color(0xFF555555)
+    return try {
+        val r = hex.substring(0, 2).toInt(16)
+        val g = hex.substring(2, 4).toInt(16)
+        val b = hex.substring(4, 6).toInt(16)
+        val a = hex.substring(6, 8).toInt(16)
+        Color(r, g, b, a)
+    } catch (e: NumberFormatException) {
+        Color(0xFF555555)
+    }
+}
+
+@Composable
+fun MultiFilamentSection(
+    mmuData: MmuData,
+    enabled: Boolean = true,
+    onLoad: (Int) -> Unit = {},
+    onUnload: (Int) -> Unit = {},
+    onDryerStart: (Int, Int) -> Unit = { _, _ -> },
+    onDryerStop: () -> Unit = {}
+) {
+    var showDryerDialog by remember { mutableStateOf(false) }
+    val isDrying = mmuData.dryer.status == "drying"
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "Multi Filament",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = OnSurface
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (isDrying) AccentYellow.copy(alpha = 0.18f) else Color(0xFF2A2A2A))
+                    .clickable { showDryerDialog = true }
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    text = if (isDrying) {
+                        "Trocknet · ${mmuData.dryer.currentTemp}°C · ${mmuData.dryer.remainingMinutes} min"
+                    } else {
+                        "Trocknen"
+                    },
+                    color = if (isDrying) AccentYellow else OnSurfaceDim,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            mmuData.gates.forEach { gate ->
+                MmuGateCard(
+                    gate = gate,
+                    isActive = gate.index == mmuData.activeGate,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                    onLoad = { onLoad(gate.index) },
+                    onUnload = { onUnload(gate.index) }
+                )
+            }
+        }
+    }
+
+    if (showDryerDialog) {
+        MmuDryerDialog(
+            dryer = mmuData.dryer,
+            onStart = { temp, minutes ->
+                onDryerStart(temp, minutes)
+                showDryerDialog = false
+            },
+            onStop = {
+                onDryerStop()
+                showDryerDialog = false
+            },
+            onDismiss = { showDryerDialog = false }
+        )
+    }
+}
+
+@Composable
+fun MmuGateCard(
+    gate: MmuGateInfo,
+    isActive: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onLoad: () -> Unit,
+    onUnload: () -> Unit
+) {
+    val color = remember(gate.colorHex) { parseMmuGateColor(gate.colorHex) }
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF1C1C1C))
+            .then(
+                if (isActive) Modifier.border(1.dp, AccentYellow, RoundedCornerShape(14.dp))
+                else Modifier
+            )
+            .padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(18.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Text(
+            text = gate.material.ifBlank { "Leer" },
+            color = OnSurface,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+        Text(
+            text = gate.filamentName.ifBlank { "T${gate.index}" },
+            color = OnSurfaceDim,
+            fontSize = 9.sp,
+            maxLines = 1
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            IconButton(
+                onClick = onLoad,
+                enabled = enabled,
+                modifier = Modifier.size(26.dp)
+            ) {
+                Icon(
+                    Icons.Default.ArrowDownward,
+                    contentDescription = "Laden",
+                    tint = if (enabled) AccentYellow else OnSurfaceDim.copy(alpha = 0.4f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            IconButton(
+                onClick = onUnload,
+                enabled = enabled,
+                modifier = Modifier.size(26.dp)
+            ) {
+                Icon(
+                    Icons.Default.ArrowUpward,
+                    contentDescription = "Entladen",
+                    tint = if (enabled) OnSurfaceDim else OnSurfaceDim.copy(alpha = 0.4f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun MmuDryerDialog(
+    dryer: MmuDryerInfo,
+    onStart: (temp: Int, minutes: Int) -> Unit,
+    onStop: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val isDrying = dryer.status == "drying"
+    var tempInput by remember { mutableStateOf((if (dryer.targetTemp > 0) dryer.targetTemp else 45).toString()) }
+    var durationInput by remember { mutableStateOf((if (dryer.remainingMinutes > 0) dryer.remainingMinutes else 120).toString()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF222222),
+        title = {
+            Text("Filament trocknen", color = OnSurface, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                if (isDrying) {
+                    Text(
+                        "Läuft: ${dryer.currentTemp}°C von ${dryer.targetTemp}°C · noch ${dryer.remainingMinutes} min · Feuchte ${dryer.humidity}%",
+                        color = OnSurfaceDim,
+                        fontSize = 13.sp
+                    )
+                }
+                OutlinedTextField(
+                    value = tempInput,
+                    onValueChange = { tempInput = it.filter { c -> c.isDigit() } },
+                    label = { Text("Temperatur") },
+                    suffix = { Text("°C") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = AccentYellow,
+                        focusedLabelColor = AccentYellow,
+                        cursorColor = AccentYellow,
+                        focusedTextColor = OnSurface,
+                        unfocusedTextColor = OnSurface
+                    )
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(45, 55, 65).forEach { preset ->
+                        FilterChip(
+                            selected = tempInput == preset.toString(),
+                            onClick = { tempInput = preset.toString() },
+                            label = { Text("${preset}°", fontSize = 11.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = AccentYellow,
+                                selectedLabelColor = Color.Black,
+                                containerColor = SurfaceVariant,
+                                labelColor = OnSurfaceDim
+                            )
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = durationInput,
+                    onValueChange = { durationInput = it.filter { c -> c.isDigit() } },
+                    label = { Text("Dauer") },
+                    suffix = { Text("min") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = AccentYellow,
+                        focusedLabelColor = AccentYellow,
+                        cursorColor = AccentYellow,
+                        focusedTextColor = OnSurface,
+                        unfocusedTextColor = OnSurface
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val temp = tempInput.toIntOrNull() ?: 45
+                val minutes = durationInput.toIntOrNull() ?: 120
+                onStart(temp, minutes)
+            }) {
+                Text("Start", color = AccentYellow, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            Row {
+                if (isDrying) {
+                    TextButton(onClick = onStop) {
+                        Text("Stoppen", color = Color(0xFFE57373))
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Abbrechen", color = OnSurfaceDim)
+                }
+            }
+        }
+    )
 }
 
 // ── Routine chips grid ─────────────────────────────────────────────────────────
@@ -3400,11 +3689,20 @@ fun WebcamSettingsDialog(
                 val resolvedPort = webcamPort.toIntOrNull()?.takeIf { it > 0 } ?: uiState.config.port
                 val resolvedHost = uiState.config.host
                 val resolvedKey = if (appendApiToken) uiState.config.apiKey else ""
-                fun buildPreviewUrl(path: String): String {
-                    if (resolvedHost.isBlank() || path.isBlank()) return ""
-                    val keyPart = if (resolvedKey.isNotBlank()) "?apikey=$resolvedKey" else ""
-                    return if (path.startsWith("/")) "http://$resolvedHost:$resolvedPort$path$keyPart"
-                    else if (resolvedKey.isNotBlank()) "$path?apikey=$resolvedKey" else path
+                fun appendKeyPreview(url: String): String {
+                    if (resolvedKey.isBlank()) return url
+                    val separator = if (url.contains("?")) "&" else "?"
+                    return "$url${separator}apikey=$resolvedKey"
+                }
+                fun buildPreviewUrl(rawPath: String): String {
+                    if (resolvedHost.isBlank() || rawPath.isBlank()) return ""
+                    val path = if (rawPath.startsWith("http://") || rawPath.startsWith("https://") || rawPath.startsWith("/")) {
+                        rawPath
+                    } else {
+                        "/$rawPath"
+                    }
+                    return if (path.startsWith("/")) appendKeyPreview("http://$resolvedHost:$resolvedPort$path")
+                    else appendKeyPreview(path)
                 }
                 val previewUrl = buildPreviewUrl(streamUrl.trim())
                 val previewSnapshotUrl = buildPreviewUrl(snapshotUrl.trim())
