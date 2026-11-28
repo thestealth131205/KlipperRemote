@@ -95,6 +95,7 @@ fun HomeScreen(
     val uiState by viewModel.uiState.collectAsState()
     val ctx0 = LocalContext.current
     var setTempTarget by remember { mutableStateOf<TemperatureInfo?>(null) }
+    var lightOn by remember { mutableStateOf(true) }
     var showWebcamSettings by remember { mutableStateOf(false) }
     var showPowerDialog by remember { mutableStateOf(false) }
     var showGcodeFileBrowser by remember { mutableStateOf(false) }
@@ -320,14 +321,38 @@ fun HomeScreen(
 
                 val BewegenHeaderBlock: @Composable () -> Unit = {
                     SectionHeader(title = "Bewegen") {
-                        Box(
-                            modifier = Modifier.alpha(if (isPrinting) 0.4f else 1f)
-                                .clip(RoundedCornerShape(8.dp)).background(Color(0xFF2A2A2A))
-                                .clickable(enabled = !isPrinting) { viewModel.motorsOff() }
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            contentAlignment = Alignment.Center
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Motor Abschalten", color = OnSurfaceDim, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(if (lightOn) AccentYellow.copy(alpha = 0.15f) else Color(0xFF2A2A2A))
+                                    .clickable {
+                                        val next = !lightOn
+                                        lightOn = next
+                                        viewModel.sendGcode(if (next) "LICHT_EIN" else "LICHT_AUS")
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    if (lightOn) Icons.Default.Lightbulb else Icons.Default.LightbulbCircle,
+                                    contentDescription = "Licht an/aus",
+                                    tint = if (lightOn) AccentYellow else OnSurfaceDim.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Box(
+                                modifier = Modifier.alpha(if (isPrinting) 0.4f else 1f)
+                                    .clip(RoundedCornerShape(8.dp)).background(Color(0xFF2A2A2A))
+                                    .clickable(enabled = !isPrinting) { viewModel.motorsOff() }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("Motor Abschalten", color = OnSurfaceDim, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                            }
                         }
                     }
                 }
@@ -816,6 +841,18 @@ fun TemperatureGrid(
     }
 }
 
+/** Menschenlesbarer Name eines Klipper-Temperaturobjekts (z. B. "heater_generic chamber" → "Bauraum"). */
+fun temperatureDisplayName(name: String): String = when {
+    name == "extruder" -> "Extruder"
+    name.startsWith("extruder") -> "Extruder ${name.removePrefix("extruder")}"
+    name == "heater_bed" -> "Heater Bed"
+    name == "chamber" || name.removePrefix("heater_generic ") == "chamber" ||
+        name.removePrefix("temperature_sensor ") == "chamber" -> "Bauraum"
+    name.startsWith("heater_generic ") -> name.removePrefix("heater_generic ")
+    name.startsWith("temperature_sensor ") -> name.removePrefix("temperature_sensor ")
+    else -> name
+}
+
 @Composable
 fun TempCard(
     temp: TemperatureInfo,
@@ -823,14 +860,7 @@ fun TempCard(
     enabled: Boolean = true,
     onSetTemp: () -> Unit
 ) {
-    val displayName = when {
-        temp.name == "extruder" -> "Extruder"
-        temp.name.startsWith("extruder") -> "Extruder ${temp.name.removePrefix("extruder")}"
-        temp.name == "heater_bed" -> "Heater Bed"
-        temp.name.startsWith("heater_generic ") -> temp.name.removePrefix("heater_generic ")
-        temp.name.startsWith("temperature_sensor ") -> temp.name.removePrefix("temperature_sensor ")
-        else -> temp.name
-    }
+    val displayName = temperatureDisplayName(temp.name)
     val targetText = if (temp.target == 0f) "Aus" else "→ %.0f°C".format(temp.target)
     val isActive = temp.target > 0f
 
@@ -4261,13 +4291,7 @@ fun SetTempDialog(
     onConfirm: (Float) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val displayName = when {
-        temp.name == "extruder" -> "Extruder"
-        temp.name == "heater_bed" -> "Heater Bed"
-        temp.name.startsWith("heater_generic ") -> temp.name.removePrefix("heater_generic ")
-        temp.name.startsWith("temperature_sensor ") -> temp.name.removePrefix("temperature_sensor ")
-        else -> temp.name
-    }
+    val displayName = temperatureDisplayName(temp.name)
     var inputValue by remember(temp.name) {
         mutableStateOf(temp.target.toInt().let { if (it == 0) "" else it.toString() })
     }
